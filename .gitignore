@@ -1,0 +1,24 @@
+# ==============================================================================
+# DIEM Agentic RAG - .gitignore 
+# ==============================================================================
+.env
+
+__pycache__/
+*.pyc
+
+chroma/
+chroma_db/
+
+.vscode/
+
+data/
+
+.chainlit/
+
+evaluation/
+
+models/
+
+public/
+
+chroma_db_backup.zip
