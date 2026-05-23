@@ -80,7 +80,7 @@ RERANKER_MODEL_NAME_OPENROUTER = "cohere/rerank-4-pro"
 # ---------------------------------------------------------------------------
 
 # Primary embedding model — superior on multilingual benchmarks (570M params).
-EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
+EMBEDDING_MODEL_NAME = "BAAI/bge-m3"   #"BAAI/bge-m3" # "Qwen/Qwen3-Embedding-0.6B"
 
 # Device for embedding inference. Auto-selects CUDA if available.
 import torch as _torch
@@ -177,8 +177,8 @@ URL_BLACKLIST = frozenset([
     "idp/profile", "idp.unisa.it", "/sitemap", "?sitemap",
     "/login", "/logout", "/search", ".xls", ".xlsx",
     ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-    "/home/news", "/news/", "/news?", "/home/eventi", "/didattica/orari",
-    "/ricerca/progetti-finanziati", "/comunicazioni-docenti", "?avvisi=",
+    "/home/news", "/news/", "/news?", "/home/eventi", "/didattica/orari", 
+    "/comunicazioni-docenti", "?avvisi=",
 ])
 
 # Minimum characters a cleaned page must contain to be retained.
@@ -195,12 +195,12 @@ CRAWL_DELAY = 0.3
 # ---------------------------------------------------------------------------
 
 # Child chunks — used for vector indexing (small, precise embeddings).
-CHILD_CHUNK_SIZE = 500
-CHILD_CHUNK_OVERLAP = 60
+CHILD_CHUNK_SIZE = 400
+CHILD_CHUNK_OVERLAP = 50
 
 # Parent chunks — returned to the LLM as context (richer content).
-PARENT_CHUNK_SIZE = 1500
-PARENT_CHUNK_OVERLAP = 150
+PARENT_CHUNK_SIZE = 1200
+PARENT_CHUNK_OVERLAP = 100
 
 CHUNK_MIN_CHARS = 100
 
@@ -209,10 +209,10 @@ CHUNK_MIN_CHARS = 100
 # ---------------------------------------------------------------------------
 
 # Number of candidate chunks retrieved by the bi-encoder.
-SIMILARITY_TOP_K = 40
+SIMILARITY_TOP_K = 50
 
 # Number of chunks retained after cross-encoder reranking.
-RERANK_TOP_N = 12
+RERANK_TOP_N = 15
 
 # ---------------------------------------------------------------------------
 # Agentic Loop Parameters
@@ -234,3 +234,8 @@ FAITHFULNESS_THRESHOLD = 0.8
 
 # Enable the output guardrail node.
 ENABLE_OUTPUT_GUARDRAIL = True
+
+
+# Hybrid search weights for RRF (dense + BM25)
+HYBRID_DENSE_WEIGHT  = 0.6
+HYBRID_SPARSE_WEIGHT = 0.4

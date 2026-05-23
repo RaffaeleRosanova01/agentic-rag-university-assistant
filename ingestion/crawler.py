@@ -127,13 +127,15 @@ def _normalize_url(url: str) -> str:
     #     bandi from all departments and all years.
     #   - /ricerca/pubblicazioni: anno is content-identifying — without it
     #     the page shows only the most recent year (server-side default).
+    #   - /ricerca/progetti-finanziati: stato filters active vs all projects.
+    #   - /conto-terzi: stato filters active vs all contracts.
     if "?" not in url:
         return url
 
     _STRIP_PARAMS = {
         "lang", "language", "lng", "locale", "session", "sessid", "token",
         "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-        "page", "paged", "p", "print", "format", "output", "anno", "struttura", 
+        "page", "paged", "p", "print", "format", "output", "anno", "struttura",
         "modulo", "bando", "idConcorso", "categoria", "start", "end", "from", "to",
         "progetto", "tip", "sitemap", "stato",
     }
@@ -145,6 +147,10 @@ def _normalize_url(url: str) -> str:
     # For pubblicazioni pages, preserve anno.
     if "/ricerca/pubblicazioni" in url:
         _STRIP_PARAMS -= {"anno"}
+
+    # For progetti-finanziati and conto-terzi, preserve stato.
+    if "/ricerca/progetti-finanziati" in url or "/conto-terzi" in url:
+        _STRIP_PARAMS -= {"stato"}
 
     base, query = url.split("?", 1)
     kept = [
@@ -218,14 +224,17 @@ def _extract_links(soup: BeautifulSoup, base_url: str) -> Tuple[Set[str], Set[st
             if any(d in absolute for d in authorized_domains):
                 pdf_links.add(absolute)
         elif _is_allowed(absolute):
-            # Filter bandi links: only accept anno 2025 and 2026.
+            # Filter bandi links: only accept anno 2025/2026 with struttura=300638.
             if "/home/bandi" in absolute:
                 anno_match = re.search(r"[?&]anno=(\d{4})", absolute)
-                if anno_match:
+                struttura_match = re.search(r"[?&]struttura=(\d+)", absolute)
+                if anno_match and struttura_match:
                     if int(anno_match.group(1)) not in (2025, 2026):
                         continue
+                    if struttura_match.group(1) != "300638":
+                        continue
                 else:
-                    # No anno parameter — skip to avoid unfiltered bandi page.
+                    # Missing anno or struttura — skip to avoid unfiltered bandi page.
                     continue
 
             # Filter pubblicazioni links: only accept anno 2024, 2025, 2026.
@@ -236,6 +245,18 @@ def _extract_links(soup: BeautifulSoup, base_url: str) -> Tuple[Set[str], Set[st
                         continue
                 # No anno parameter — allow through (server returns latest year).
 
+            # Filter progetti-finanziati: only accept stato=1 (active projects).
+            if "/ricerca/progetti-finanziati" in absolute:
+                stato_match = re.search(r"[?&]stato=(\d+)", absolute)
+                if not stato_match or stato_match.group(1) != "1":
+                    continue
+
+            # Filter conto-terzi: only accept stato=1 (active contracts).
+            if "/conto-terzi" in absolute:
+                stato_match = re.search(r"[?&]stato=(\d+)", absolute)
+                if not stato_match or stato_match.group(1) != "1":
+                    continue
+
             page_links.add(absolute)
 
     return page_links, pdf_links
@@ -245,10 +266,10 @@ def _extract_links(soup: BeautifulSoup, base_url: str) -> Tuple[Set[str], Set[st
 # ---------------------------------------------------------------------------
 
 _NAV_LINES = frozenset([
-    "skip to main content", "cerca persona", "search", "english", "chinese", "français", 
-    "toggle navigation", "wi-fi@unisa", "webmail",  "webmail studenti", "tutti i servizi", 
-    "futuro studente", "studente iscritto", "laureato", "personale tecnico amministrativo", 
-    "sitemap", "rss", "rubrica", "archivio mail allusers", "sicurezza informatica", 
+    "skip to main content", "cerca persona", "search", "english", "chinese", "français",
+    "toggle navigation", "wi-fi@unisa", "webmail",  "webmail studenti", "tutti i servizi",
+    "futuro studente", "studente iscritto", "laureato", "personale tecnico amministrativo",
+    "sitemap", "rss", "rubrica", "archivio mail allusers", "sicurezza informatica",
     "agenda studenti", "area utente (esse3)", "helpdesk", "office365", "personaldesk",
 ])
 
@@ -261,6 +282,165 @@ def _remove_nav_lines(text: str) -> str:
     cleaned = [l for l in lines if l.strip().lower() not in _NAV_LINES]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip()
 
+# ---------------------------------------------------------------------------
+# Structured source extractor (BeautifulSoup-based)
+# ---------------------------------------------------------------------------
+
+def _is_structured_source(url: str) -> bool:
+    """
+    Returns True for URLs whose content is structured as accordion/panel
+    components or direct tables that Trafilatura cannot extract correctly
+    due to low text density per block.
+    """
+    parsed = urllib.parse.urlparse(url)
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/")
+
+    if netloc == "www.diem.unisa.it":
+        if path in {
+            "/dipartimento/personale",
+            "/dipartimento/strutture",
+            "/dipartimento/organi-collegiali",
+            "/didattica/offerta-formativa",
+            "/didattica/alternanza-scuola-lavoro/progetti",
+            "/didattica/alternanza-scuola-lavoro/contatti",
+            "/terza-missione/trasferimento-tecnologico/proprieta-intellettuale",
+            "/ricerca/progetti-finanziati",
+            "/terza-missione/trasferimento-tecnologico/conto-terzi",
+            "/terza-missione/trasferimento-tecnologico/spin-off",
+        }:
+            return True
+        # All commissioni detail pages (with or without ?dettaglio= parameter).
+        if path == "/dipartimento/commissioni":
+            return True
+
+    if netloc == "docenti.unisa.it":
+        return path.endswith("/didattica")
+
+    return False
+
+
+def _extract_structured_sections(html: str) -> str:
+    """
+    Extracts content from accordion/panel-structured pages using BeautifulSoup.
+
+    For each panel found in the DOM, extracts the heading title and the
+    body rows, assembling them as structured plain text. Duplicate lines
+    that repeat the panel title are removed.
+
+    For commissioni detail pages that have no panel structure but a direct
+    table (Pattern 3), extracts h1 title, h3 headings, paragraphs, and
+    table rows directly.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    sections: List[str] = []
+
+    # Pattern 1: Bootstrap panels (div.panel > div.panel-heading + table/div.panel-body)
+    for panel in soup.select("div.panel"):
+        heading_el = panel.select_one("div.panel-heading")
+        if not heading_el:
+            continue
+
+        title_el = heading_el.select_one("a")
+        if title_el:
+            title = (
+                title_el.get("data-original-title")
+                or title_el.get("title")
+                or title_el.get_text(strip=True)
+            )
+        else:
+            title = heading_el.get_text(strip=True)
+
+        title = title.strip() if title else ""
+        if not title:
+            continue
+
+        rows: List[str] = []
+        body_el = panel.select_one("div.panel-body, div.panel-collapse")
+        table_el = panel.select_one("table")
+
+        if body_el:
+            for line in body_el.get_text(separator="\n").splitlines():
+                line = line.strip()
+                if line and line.lower() != title.lower():
+                    rows.append(line)
+        elif table_el:
+            for td in table_el.select("td:not(.icon)"):
+                line = td.get_text(strip=True)
+                if line and line.lower() != title.lower():
+                    rows.append(line)
+
+        section = title
+        if rows:
+            section += "\n" + "\n".join(rows)
+        sections.append(section)
+
+    # Pattern 2: Generic accordion items fallback.
+    if not sections:
+        for item in soup.select("div.accordion-item, div.collapse-item"):
+            heading_el = item.select_one("h2, h3, h4, div.accordion-header")
+            body_el = item.select_one("div.accordion-body, div.collapse")
+            if not heading_el:
+                continue
+            title = heading_el.get_text(strip=True)
+            if not title:
+                continue
+            rows = []
+            if body_el:
+                for line in body_el.get_text(separator="\n").splitlines():
+                    line = line.strip()
+                    if line and line.lower() != title.lower():
+                        rows.append(line)
+            section = title
+            if rows:
+                section += "\n" + "\n".join(rows)
+            sections.append(section)
+
+    # Pattern 3: Direct table pages (commissioni detail pages without panels).
+    # These pages have h1 title + h3 headings + paragraphs + a direct table.
+    if not sections:
+        parts: List[str] = []
+
+        h1 = soup.find("h1")
+        if h1:
+            title = h1.get_text(strip=True)
+            if "|" in title:
+                title = title.split("|", 1)[-1].strip()
+            if title:
+                parts.append(title)
+
+        for h3 in soup.find_all("h3"):
+            text = h3.get_text(strip=True)
+            if text and text != "-":
+                parts.append(f"\n{text}")
+
+        for p in soup.find_all("p"):
+            text = p.get_text(strip=True)
+            if text and len(text) > 20:
+                parts.append(text)
+
+        for table in soup.find_all("table"):
+            rows = []
+            for tr in table.select("tr"):
+                tds = [
+                    td.get_text(strip=True)
+                    for td in tr.find_all("td")
+                    if td.get_text(strip=True)
+                ]
+                if tds:
+                    rows.append(" | ".join(tds))
+            if rows:
+                parts.append("\n".join(rows))
+
+        if parts:
+            result = re.sub(r"\n{3,}", "\n\n", "\n".join(parts)).strip()
+            if result:
+                return result
+
+    if not sections:
+        return ""
+
+    return re.sub(r"\n{3,}", "\n\n", "\n\n".join(sections)).strip()
 
 # ---------------------------------------------------------------------------
 # HTML Content Extraction
@@ -284,6 +464,10 @@ def _extract_content(html: str, url: str) -> str:
         Markdown-formatted text of the main content area, or empty string
         if no useful content was found.
     """
+    # For structured accordion/panel pages, use BeautifulSoup directly.
+    if _is_structured_source(url):
+        return _extract_structured_sections(html)
+
     def _try(favor_precision: bool) -> str:
         try:
             text = trafilatura.extract(
@@ -837,7 +1021,7 @@ def run() -> None:
     all_pdf_urls: Set[str] = set()
 
     # ------------------------------------------------------------------
-    # Phase 1 — DIEM main domain
+    # Phase 1a — DIEM main domain
     # ------------------------------------------------------------------
     print("[Phase 1] Crawling www.diem.unisa.it ...")
     target = config.CRAWL_TARGETS["diem"]
@@ -849,6 +1033,24 @@ def run() -> None:
     all_documents.extend(diem_docs)
     all_pdf_urls.update(diem_pdfs)
     print(f"[Phase 1] Complete — {len(diem_docs)} pages, {len(diem_pdfs)} PDFs found.\n")
+
+    # ------------------------------------------------------------------
+    # Phase 1b — DIEM bandi (DIEM only, structured extraction)
+    # ------------------------------------------------------------------
+    print("[Phase 1b] Crawling DIEM bandi ...")
+    BANDI_SEEDS = [
+        "https://www.diem.unisa.it/home/bandi?anno=2024&struttura=300638&modulo=505",
+        "https://www.diem.unisa.it/home/bandi?anno=2025&struttura=300638&modulo=505",
+        "https://www.diem.unisa.it/home/bandi?anno=2026&struttura=300638&modulo=505",
+    ]
+    bandi_docs, bandi_pdfs = _crawl_bfs(
+        seeds=BANDI_SEEDS,
+        max_depth=0,
+        allowed_domain="www.diem.unisa.it",
+    )
+    all_documents.extend(bandi_docs)
+    # Intentionally ignore bandi PDF attachments.
+    print(f"[Phase 1b] Complete — {len(bandi_docs)} bandi pages crawled.\n")
 
     # ------------------------------------------------------------------
     # Phase 2 — Faculty profiles

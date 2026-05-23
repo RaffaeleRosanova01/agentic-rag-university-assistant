@@ -2,39 +2,45 @@
 Indexer module for the DIEM Agentic RAG project.
 
 Reads child chunks from chunked_documents.json and parent chunks from
-chunked_parents.json, both produced by chunker.py. Computes embeddings
-for each child chunk and upserts them into a persistent ChromaDB collection.
+chunked_parents.json, both produced by chunker.py. Computes both dense
+and sparse embeddings using BGE-M3 (FlagEmbedding) and stores them in
+two separate ChromaDB collections.
 
 Architecture:
-    - Child chunks are indexed in ChromaDB with their embeddings.
-      Each child carries a parent_id and doc_id as metadata, but NOT
-      the parent_text — that is stored separately in the docstore.
-    - Parent chunks are not embedded. They are serialised in
-      chunked_parents.json and loaded into an InMemoryStore at runtime
-      by retriever.py, implementing the ParentDocumentRetriever pattern.
+    - Dense collection (COLLECTION_NAME):
+        Stores dense semantic vectors produced by BGE-M3.
+        Used for semantic similarity search.
+
+    - Sparse collection (COLLECTION_NAME + '_sparse'):
+        Stores sparse lexical vectors (learned sparse, not BM25) produced
+        by BGE-M3. Used for exact keyword matching on proper nouns,
+        course codes, and faculty names.
+
+    Both collections share identical metadata and chunk IDs, enabling
+    Reciprocal Rank Fusion (RRF) at query time in retriever.py.
+
+    Parent chunks are not embedded. They are serialised in
+    chunked_parents.json and loaded into an InMemoryStore at runtime
+    by retriever.py.
 
 Incremental update strategy:
     Change detection is performed at document level using doc_id and
-    content_hash, both derived from parent chunks (the authoritative
-    source). The logic for each document in the current crawl is:
-
+    content_hash derived from parent chunks:
         - doc_id NOT in ChromaDB         → new document, add all its chunks
         - doc_id in ChromaDB, hash equal → unchanged, skip entirely
-        - doc_id in ChromaDB, hash diff  → changed, delete all old chunks
+        - doc_id in ChromaDB, hash diff  → changed, delete old chunks
                                            and re-index the new version
-
-    Documents present in ChromaDB but absent from the current crawl
-    (i.e. pages removed from the site) are deleted from ChromaDB.
+    Documents removed from the site are deleted from both collections.
 
 Usage:
     python -m ingestion.indexer
 """
 
 import json
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 
 import chromadb
-from langchain_huggingface import HuggingFaceEmbeddings
+import numpy as np
 
 import config
 
@@ -44,17 +50,6 @@ import config
 # ---------------------------------------------------------------------------
 
 def _load_children() -> List[Dict]:
-    """
-    Loads the list of child chunks from chunked_documents.json.
-
-    Returns:
-        A list of child chunk dicts, each containing at minimum:
-        chunk_id, parent_id, doc_id, source, doc_type, domain,
-        section_type, header, child_text.
-
-    Raises:
-        FileNotFoundError: if chunked_documents.json does not exist.
-    """
     print(f"[Indexer] Loading child chunks from {config.CHUNKED_DOCUMENTS_PATH} ...")
     with open(config.CHUNKED_DOCUMENTS_PATH, "r", encoding="utf-8") as fh:
         chunks: List[Dict] = json.load(fh)
@@ -63,20 +58,6 @@ def _load_children() -> List[Dict]:
 
 
 def _load_parents() -> List[Dict]:
-    """
-    Loads the list of parent chunks from chunked_parents.json.
-
-    Parent chunks are used here exclusively for change detection:
-    they carry the doc_id and content_hash that the incremental update
-    logic needs. They are NOT indexed in ChromaDB.
-
-    Returns:
-        A list of parent chunk dicts, each containing at minimum:
-        parent_id, doc_id, content_hash, source.
-
-    Raises:
-        FileNotFoundError: if chunked_parents.json does not exist.
-    """
     print(f"[Indexer] Loading parent chunks from {config.CHUNKED_PARENTS_PATH} ...")
     with open(config.CHUNKED_PARENTS_PATH, "r", encoding="utf-8") as fh:
         parents: List[Dict] = json.load(fh)
@@ -85,45 +66,120 @@ def _load_parents() -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
-# Model and collection
+# Embedding model
 # ---------------------------------------------------------------------------
 
-def _build_embedding_model() -> HuggingFaceEmbeddings:
+def _build_embedding_model():
     """
-    Instantiates the sentence-transformer embedding model.
+    Loads BGE-M3 via FlagEmbedding for simultaneous dense and sparse
+    embedding generation.
 
-    The model is downloaded on first run and cached in config.MODELS_DIR.
-    Subsequent runs load directly from the local cache without network access.
+    Returns:
+        BGEM3FlagModel instance ready for encoding.
     """
-    print(f"[Indexer] Loading embedding model: {config.EMBEDDING_MODEL_NAME} ...")
-    model = HuggingFaceEmbeddings(
-        model_name=config.EMBEDDING_MODEL_NAME,
-        cache_folder=config.MODELS_DIR,
-        model_kwargs={"device": config.EMBEDDING_DEVICE},
-        encode_kwargs={"batch_size": config.EMBEDDING_BATCH_SIZE},
+    from FlagEmbedding import BGEM3FlagModel
+
+    print(f"[Indexer] Loading BGE-M3 model via FlagEmbedding ...")
+    model = BGEM3FlagModel(
+        config.EMBEDDING_MODEL_NAME,
+        use_fp16=True,
+        device=config.EMBEDDING_DEVICE,
     )
-    print("[Indexer] Embedding model ready.")
+    print("[Indexer] BGE-M3 model ready.")
     return model
 
 
-def _build_chroma_collection() -> chromadb.Collection:
+def _encode_batch(
+    model,
+    texts: List[str],
+    batch_size: int,
+) -> Tuple[List[List[float]], List[Dict[int, float]]]:
     """
-    Opens (or creates) the persistent ChromaDB collection defined in config.
+    Encodes a list of texts using BGE-M3, producing both dense and sparse
+    vectors in batches to avoid out-of-memory errors.
+
+    Args:
+        model:      BGEM3FlagModel instance.
+        texts:      List of text strings to encode.
+        batch_size: Number of texts per encoding batch.
 
     Returns:
-        The ChromaDB collection object ready for upsert operations.
+        dense_vecs:   List of dense float vectors (one per text).
+        sparse_vecs:  List of sparse dicts {token_id: weight} (one per text).
+    """
+    all_dense: List[List[float]] = []
+    all_sparse: List[Dict[int, float]] = []
+
+    total = len(texts)
+    num_batches = (total + batch_size - 1) // batch_size
+
+    for batch_idx in range(num_batches):
+        start = batch_idx * batch_size
+        end = min(start + batch_size, total)
+        batch = texts[start:end]
+
+        output = model.encode(
+            batch,
+            return_dense=True,
+            return_sparse=True,
+            return_colbert_vecs=False,
+        )
+
+        dense_batch = output["dense_vecs"]
+        sparse_batch = output["lexical_weights"]
+
+        # Convert numpy arrays to plain Python lists for ChromaDB.
+        for vec in dense_batch:
+            all_dense.append(vec.tolist() if hasattr(vec, "tolist") else list(vec))
+
+        # Convert sparse weights: ensure keys are int and values are float.
+        for weights in sparse_batch:
+            all_sparse.append({int(k): float(v) for k, v in weights.items()})
+
+        print(
+            f"[Indexer] Encoded batch {batch_idx + 1}/{num_batches} "
+            f"({end}/{total} chunks)."
+        )
+
+    return all_dense, all_sparse
+
+
+# ---------------------------------------------------------------------------
+# ChromaDB collections
+# ---------------------------------------------------------------------------
+
+def _build_chroma_collections() -> Tuple[chromadb.Collection, chromadb.Collection]:
+    """
+    Opens (or creates) the two persistent ChromaDB collections:
+        - Dense collection:  HNSW cosine index for dense vectors.
+        - Sparse collection: stores sparse vectors as metadata for manual
+                             dot-product scoring at query time.
+
+    Returns:
+        (dense_collection, sparse_collection)
     """
     print(f"[Indexer] Connecting to ChromaDB at {config.CHROMA_DB_DIR} ...")
     client = chromadb.PersistentClient(path=config.CHROMA_DB_DIR)
-    collection = client.get_or_create_collection(
+
+    dense_collection = client.get_or_create_collection(
         name=config.COLLECTION_NAME,
         metadata={"hnsw:space": "cosine"},
     )
-    print(
-        f"[Indexer] Collection '{config.COLLECTION_NAME}' ready "
-        f"({collection.count()} documents currently stored)."
+
+    sparse_collection = client.get_or_create_collection(
+        name=config.COLLECTION_NAME + "_sparse",
+        metadata={"hnsw:space": "cosine"},
     )
-    return collection
+
+    print(
+        f"[Indexer] Dense collection '{config.COLLECTION_NAME}' ready "
+        f"({dense_collection.count()} documents stored)."
+    )
+    print(
+        f"[Indexer] Sparse collection '{config.COLLECTION_NAME}_sparse' ready "
+        f"({sparse_collection.count()} documents stored)."
+    )
+    return dense_collection, sparse_collection
 
 
 # ---------------------------------------------------------------------------
@@ -133,13 +189,8 @@ def _build_chroma_collection() -> chromadb.Collection:
 def _build_metadata(chunk: Dict) -> Dict:
     """
     Constructs the ChromaDB metadata dict for a single child chunk.
-
-    ChromaDB requires all metadata values to be scalar types
-    (str, int, or float). parent_text is intentionally excluded —
-    it is stored in the InMemoryStore docstore, not in ChromaDB.
-
-    The parent_id stored here is the key used by ParentDocumentRetriever
-    to look up the corresponding parent document in the docstore.
+    All values must be scalar (str, int, float).
+    parent_text is intentionally excluded — stored in the docstore.
     """
     return {
         "source":       chunk["source"],
@@ -148,6 +199,7 @@ def _build_metadata(chunk: Dict) -> Dict:
         "parent_id":    chunk["parent_id"],
         "domain":       chunk["domain"],
         "section_type": chunk["section_type"],
+        "content_hash": chunk.get("content_hash", "")
     }
 
 
@@ -156,19 +208,6 @@ def _build_metadata(chunk: Dict) -> Dict:
 # ---------------------------------------------------------------------------
 
 def _build_doc_hash_map(parents: List[Dict]) -> Dict[str, str]:
-    """
-    Builds a mapping from doc_id to content_hash from the parent chunks.
-
-    Since multiple parent chunks may share the same doc_id (one document
-    can produce multiple parent chunks), we take the first content_hash
-    encountered — they are identical for all parents of the same document.
-
-    Args:
-        parents: List of parent chunk dicts from chunked_parents.json.
-
-    Returns:
-        A dict mapping doc_id → content_hash.
-    """
     doc_hash_map: Dict[str, str] = {}
     for parent in parents:
         doc_id = parent["doc_id"]
@@ -178,44 +217,27 @@ def _build_doc_hash_map(parents: List[Dict]) -> Dict[str, str]:
 
 
 def _perform_incremental_update(
-    collection: chromadb.Collection,
+    dense_collection: chromadb.Collection,
+    sparse_collection: chromadb.Collection,
     children: List[Dict],
     doc_hash_map: Dict[str, str],
 ) -> List[Dict]:
     """
-    Performs incremental update of the ChromaDB collection and returns
-    only the child chunks that need to be (re-)embedded and upserted.
-
-    Change detection is performed at document level (doc_id):
-        - doc_id not in ChromaDB       → new, include all its children
-        - doc_id in ChromaDB, same hash → unchanged, skip all its children
-        - doc_id in ChromaDB, diff hash → changed, delete old chunks,
-                                          include new children for upsert
-
-    Additionally removes documents that are in ChromaDB but no longer
-    present in the current crawl (deleted pages).
-
-    Args:
-        collection:   The ChromaDB collection.
-        children:     All child chunks from chunked_documents.json.
-        doc_hash_map: Mapping doc_id → content_hash from parent chunks.
-
-    Returns:
-        The subset of children that must be upserted.
+    Performs incremental update on both collections simultaneously.
+    Change detection is based on the dense collection (authoritative source).
+    Both collections are always kept in sync.
     """
     current_doc_ids: Set[str] = set(doc_hash_map.keys())
 
-    # Retrieve all existing doc_ids and their stored content_hash from ChromaDB.
-    # We query in batches to avoid loading all metadata at once.
     print("[Indexer] Scanning existing ChromaDB entries for incremental update ...")
 
-    existing_doc_hashes: Dict[str, str] = {}   # doc_id → stored content_hash
-    existing_chunk_ids_by_doc: Dict[str, List[str]] = {}  # doc_id → [chunk_ids]
+    existing_doc_hashes: Dict[str, str] = {}
+    existing_chunk_ids_by_doc: Dict[str, List[str]] = {}
 
     offset = 0
     batch_size = 1000
     while True:
-        result = collection.get(
+        result = dense_collection.get(
             limit=batch_size,
             offset=offset,
             include=["metadatas"],
@@ -233,9 +255,6 @@ def _perform_incremental_update(
 
     existing_doc_ids: Set[str] = set(existing_doc_hashes.keys())
 
-    # ------------------------------------------------------------------
-    # Classify documents
-    # ------------------------------------------------------------------
     new_doc_ids = current_doc_ids - existing_doc_ids
     removed_doc_ids = existing_doc_ids - current_doc_ids
     changed_doc_ids = {
@@ -251,31 +270,24 @@ def _perform_incremental_update(
         f"[Indexer]   Removed documents  : {len(removed_doc_ids)}"
     )
 
-    # ------------------------------------------------------------------
-    # Delete changed and removed documents from ChromaDB
-    # ------------------------------------------------------------------
     docs_to_delete = changed_doc_ids | removed_doc_ids
     if docs_to_delete:
         chunk_ids_to_delete: List[str] = []
         for doc_id in docs_to_delete:
             chunk_ids_to_delete.extend(existing_chunk_ids_by_doc.get(doc_id, []))
         if chunk_ids_to_delete:
-            collection.delete(ids=chunk_ids_to_delete)
+            dense_collection.delete(ids=chunk_ids_to_delete)
+            sparse_collection.delete(ids=chunk_ids_to_delete)
             print(
                 f"[Indexer] Deleted {len(chunk_ids_to_delete)} stale chunk(s) "
-                f"from {len(docs_to_delete)} document(s)."
+                f"from {len(docs_to_delete)} document(s) in both collections."
             )
 
-    # ------------------------------------------------------------------
-    # Return only children that need to be upserted
-    # ------------------------------------------------------------------
     docs_to_upsert = new_doc_ids | changed_doc_ids
-    children_to_upsert = [
-        c for c in children if c["doc_id"] in docs_to_upsert
-    ]
+    children_to_upsert = [c for c in children if c["doc_id"] in docs_to_upsert]
     print(
         f"[Indexer] Children to upsert: {len(children_to_upsert)} "
-        f"({len(unchanged_doc_ids * 0)} skipped)."  # cosmetic
+        f"({len(unchanged_doc_ids)} skipped)."
     )
     return children_to_upsert
 
@@ -285,18 +297,20 @@ def _perform_incremental_update(
 # ---------------------------------------------------------------------------
 
 def _upsert_batches(
-    collection: chromadb.Collection,
+    dense_collection: chromadb.Collection,
+    sparse_collection: chromadb.Collection,
     chunks: List[Dict],
-    embeddings: List[List[float]],
+    dense_vecs: List[List[float]],
+    sparse_vecs: List[Dict[int, float]],
 ) -> None:
     """
-    Upserts all child chunks and their precomputed embeddings into ChromaDB
-    in fixed-size batches to avoid excessive memory usage.
+    Upserts child chunks into both collections in batches.
 
-    Args:
-        collection: The target ChromaDB collection.
-        chunks:     Child chunk dicts to upsert.
-        embeddings: Precomputed embedding vectors in the same order as chunks.
+    Dense collection: stores dense embeddings for HNSW cosine search.
+    Sparse collection: stores sparse vectors as ChromaDB embeddings
+                       (converted to fixed-size representation) plus
+                       the raw sparse dict serialized in metadata for
+                       exact dot-product scoring at query time.
     """
     batch_size = 500
     total = len(chunks)
@@ -307,18 +321,41 @@ def _upsert_batches(
         end = min(start + batch_size, total)
 
         batch_chunks = chunks[start:end]
-        batch_embeddings = embeddings[start:end]
+        batch_dense = dense_vecs[start:end]
+        batch_sparse = sparse_vecs[start:end]
+        batch_ids = [c["chunk_id"] for c in batch_chunks]
+        batch_docs = [c["child_text"] for c in batch_chunks]
+        batch_meta = [_build_metadata(c) for c in batch_chunks]
 
-        collection.upsert(
-            ids=[c["chunk_id"] for c in batch_chunks],
-            documents=[c["child_text"] for c in batch_chunks],
-            embeddings=batch_embeddings,
-            metadatas=[_build_metadata(c) for c in batch_chunks],
+        # Upsert dense vectors.
+        dense_collection.upsert(
+            ids=batch_ids,
+            documents=batch_docs,
+            embeddings=batch_dense,
+            metadatas=batch_meta,
+        )
+
+        # Upsert sparse vectors.
+        # Store the sparse dict serialized as JSON in metadata for retrieval.
+        import json as _json
+        sparse_meta = []
+        for base_meta, sparse_dict in zip(batch_meta, batch_sparse):
+            m = dict(base_meta)
+            m["sparse_json"] = _json.dumps(sparse_dict)
+            sparse_meta.append(m)
+
+        # Use dense vectors as placeholder embeddings in sparse collection
+        # (required by ChromaDB — actual scoring uses sparse_json from metadata).
+        sparse_collection.upsert(
+            ids=batch_ids,
+            documents=batch_docs,
+            embeddings=batch_dense,
+            metadatas=sparse_meta,
         )
 
         print(
             f"[Indexer] Upserted batch {batch_idx + 1}/{num_batches} "
-            f"({end}/{total} chunks)."
+            f"({end}/{total} chunks) into both collections."
         )
 
 
@@ -329,18 +366,15 @@ def _upsert_batches(
 def run() -> None:
     """
     Executes the full indexing pipeline:
-        1. Load child chunks from CHUNKED_DOCUMENTS_PATH.
-        2. Load parent chunks from CHUNKED_PARENTS_PATH (for change detection).
-        3. Load the embedding model.
-        4. Perform incremental update: detect new, changed, and removed docs.
-        5. Compute embeddings only for chunks that need to be upserted.
-        6. Upsert new/changed chunks into ChromaDB.
+        1. Load child and parent chunks.
+        2. Load BGE-M3 via FlagEmbedding.
+        3. Open (or create) dense and sparse ChromaDB collections.
+        4. Detect new/changed/removed documents incrementally.
+        5. Encode new/changed children with BGE-M3 (dense + sparse).
+        6. Upsert into both collections.
     """
     print("=== DIEM Agentic RAG: Indexer Started ===\n")
 
-    # ------------------------------------------------------------------
-    # Load data
-    # ------------------------------------------------------------------
     children = _load_children()
     parents = _load_parents()
 
@@ -348,58 +382,49 @@ def run() -> None:
         print("[Indexer] No child chunks to index. Exiting.")
         return
 
-    # Build doc_id → content_hash map from parents (authoritative source).
     doc_hash_map = _build_doc_hash_map(parents)
     print(f"[Indexer] {len(doc_hash_map)} unique documents in current crawl.\n")
 
-    # ------------------------------------------------------------------
-    # Embedding model
-    # ------------------------------------------------------------------
     embed_model = _build_embedding_model()
+    dense_collection, sparse_collection = _build_chroma_collections()
 
-    # ------------------------------------------------------------------
-    # ChromaDB
-    # ------------------------------------------------------------------
-    collection = _build_chroma_collection()
-
-    # ------------------------------------------------------------------
-    # Incremental update
-    # ------------------------------------------------------------------
     print()
     children_to_upsert = _perform_incremental_update(
-        collection, children, doc_hash_map
+        dense_collection, sparse_collection, children, doc_hash_map
     )
 
     if not children_to_upsert:
         print("[Indexer] All documents are up to date. Nothing to upsert.")
-        print(f"\n[Indexer] Total docs in ChromaDB: {collection.count()}")
+        print(f"\n[Indexer] Total docs in dense ChromaDB: {dense_collection.count()}")
+        print(f"[Indexer] Total docs in sparse ChromaDB: {sparse_collection.count()}")
         print("\n=== Indexer Completed ===")
         return
 
-    # ------------------------------------------------------------------
-    # Embedding
-    # ------------------------------------------------------------------
     print(
-        f"\n[Indexer] Computing embeddings for {len(children_to_upsert)} "
-        f"child chunks (batch size: {config.EMBEDDING_BATCH_SIZE}) ..."
+        f"\n[Indexer] Computing BGE-M3 embeddings (dense + sparse) for "
+        f"{len(children_to_upsert)} child chunks "
+        f"(batch size: {config.EMBEDDING_BATCH_SIZE}) ..."
     )
     child_texts = [c["child_text"] for c in children_to_upsert]
-    embeddings: List[List[float]] = embed_model.embed_documents(child_texts)
-    print(f"[Indexer] Embeddings computed. Vector dimension: {len(embeddings[0])}.")
+    dense_vecs, sparse_vecs = _encode_batch(
+        embed_model, child_texts, config.EMBEDDING_BATCH_SIZE
+    )
+    print(
+        f"[Indexer] Embeddings computed. "
+        f"Dense dim: {len(dense_vecs[0])}. "
+        f"Sparse avg tokens: {sum(len(s) for s in sparse_vecs) / len(sparse_vecs):.1f}."
+    )
 
-    # ------------------------------------------------------------------
-    # Upsert
-    # ------------------------------------------------------------------
-    print(f"\n[Indexer] Starting upsert ...")
-    _upsert_batches(collection, children_to_upsert, embeddings)
+    print(f"\n[Indexer] Starting upsert into both collections ...")
+    _upsert_batches(
+        dense_collection, sparse_collection,
+        children_to_upsert, dense_vecs, sparse_vecs
+    )
 
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
-    final_count = collection.count()
     print(f"\n[Indexer] Upsert complete.")
-    print(f"[Indexer]   Children upserted    : {len(children_to_upsert)}")
-    print(f"[Indexer]   Total docs in ChromaDB: {final_count}")
+    print(f"[Indexer]   Children upserted            : {len(children_to_upsert)}")
+    print(f"[Indexer]   Total docs in dense collection : {dense_collection.count()}")
+    print(f"[Indexer]   Total docs in sparse collection: {sparse_collection.count()}")
     print(f"\n=== Indexer Completed ===")
 
 
