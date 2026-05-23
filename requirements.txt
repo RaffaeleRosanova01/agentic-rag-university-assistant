@@ -52,6 +52,7 @@ chromadb
 huggingface-hub
 transformers
 sentence-transformers
+FlagEmbedding
 # Required for GPU inference and device detection.
 #torch
 # Required for 4-bit quantization on machines with a capable GPU.
