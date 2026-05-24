@@ -541,38 +541,28 @@ def main():
         print("[Eval] ERROR: ragas not installed. Run: pip install ragas")
         sys.exit(1)
 
-    # Build RAGAS LLM and embeddings wrappers using the same OpenRouter config.
+    # LLM judge: same model used by the agent, via OpenRouter.
     import config
-    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    from langchain_openai import ChatOpenAI
+    from langchain_huggingface import HuggingFaceEmbeddings
 
     ragas_llm = ChatOpenAI(
-        model=config.LLM_MODEL_NAME,
+        model=config.LLM_MODEL_NAME_RAGAS,
         temperature=0,
         api_key=config.OPENROUTER_API_KEY,
         base_url=config.OPENROUTER_BASE_URL,
         max_tokens=1024,
     )
+    print(f"[Eval] Using LLM judge: {config.LLM_MODEL_NAME_RAGAS} via OpenRouter.")
 
-    # RAGAS needs an embeddings model for answer_relevancy.
-    # Uses text-embedding-3-small via OpenRouter if available,
-    # otherwise falls back to the HuggingFace model used by the retriever.
-    try:
-        ragas_embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-small",
-            api_key=config.OPENROUTER_API_KEY,
-            base_url=config.OPENROUTER_BASE_URL,
-        )
-        # Test the embeddings model.
-        ragas_embeddings.embed_query("test")
-        print("[Eval] Using OpenAI text-embedding-3-small for RAGAS.")
-    except Exception:
-        from langchain_huggingface import HuggingFaceEmbeddings
-        ragas_embeddings = HuggingFaceEmbeddings(
-            model_name=config.EMBEDDING_MODEL_NAME,
-            cache_folder=config.MODELS_DIR,
-            model_kwargs={"device": "cpu"},
-        )
-        print(f"[Eval] Using HuggingFace {config.EMBEDDING_MODEL_NAME} for RAGAS.")
+    # Embeddings for answer_relevancy: same local model used by the retriever.
+    ragas_embeddings = HuggingFaceEmbeddings(
+        model_name=config.EMBEDDING_MODEL_NAME_RAGAS,
+        cache_folder=config.MODELS_DIR,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"batch_size": 32},
+    )
+    print(f"[Eval] Using embeddings: {config.EMBEDDING_MODEL_NAME_RAGAS} (local).")
 
     dataset = build_ragas_dataset(samples)
     ragas_result = run_ragas_evaluation(dataset, ragas_llm, ragas_embeddings)

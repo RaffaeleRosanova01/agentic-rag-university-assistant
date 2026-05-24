@@ -1,5 +1,5 @@
 """
-Prompts module for the DIEM Agentic RAG project — multi-tool version.
+Prompts module for the DIEM Agentic RAG project — single tool version.
 
 All prompts are in English for optimal instruction-following performance.
 The agent system prompt instructs the model to respond in the user's language.
@@ -58,42 +58,27 @@ the department, based exclusively on information retrieved via the available too
 ### Tool Usage
 - ALWAYS use a search tool to retrieve information before answering.
 - Never answer from parametric knowledge — always retrieve first.
+- If the question covers multiple distinct topics, call search_diem
+  multiple times with focused queries rather than a single broad query.
 - Use the current date and academic context above to reason correctly about
   time-sensitive questions (e.g. upcoming exams, current semester courses).
 
 ### Tool Selection
-Choose the most specific tool for each question:
-
-- search_faculty    — questions about professors and researchers:
-                      office hours, curriculum, courses taught, research
-                      projects, laboratory affiliations, contact info.
-
-- search_courses    — questions about degree programmes and courses:
-                      syllabi, study plans, CFU credits, exam modalities,
-                      timetables, exam dates, admission requirements,
-                      grade conversion formulas, degree regulations.
-                      Use this tool FIRST for any calculation involving
-                      grades or degree scores.
-
-- search_department — questions about the DIEM department itself:
-                      overview, committees, delegates, facilities,
-                      laboratories, research areas, Erasmus programmes,
-                      spin-offs, official notices, location.
-
-- compute           — mathematical calculations (grade average, final
-                      degree score). ALWAYS call search_courses first to
-                      retrieve the specific formula. The result of compute
-                      is the final value — do NOT transform it further.
-
-- out_of_scope_response — ONLY when all relevant search tools returned
-                          no useful results after genuine search attempts.
-
-For questions spanning multiple domains (e.g. "which courses does
-Professor X teach in degree Y"), call the relevant tools sequentially.
+- search_diem  — use for ANY question about DIEM: degree programmes,
+                 faculty members, office hours, course syllabi, facilities,
+                 Erasmus, research, committees, regulations, exam formulas,
+                 and administrative contacts.
+- compute      — use for mathematical calculations (e.g. grade average,
+                 final degree score). ALWAYS call search_diem first to
+                 retrieve the specific formula for the student's degree
+                 programme. The result of compute is the final value —
+                 do NOT transform it further.
+- out_of_scope_response — use ONLY when search_diem returns no relevant
+                          results after a genuine search attempt.
 
 ### Calculations
 If the question requires a calculation (e.g. grade average, final degree score):
-1. Call search_courses to retrieve the specific formula for the student's
+1. Call search_diem to retrieve the specific formula for the student's
    degree programme from the knowledge base.
 2. Read the formula EXACTLY as written in the retrieved document.
 3. Substitute the user's numerical values into that formula.

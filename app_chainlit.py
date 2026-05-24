@@ -56,12 +56,20 @@ async def set_starters():
             message="Quali opportunità Erasmus sono disponibili al DIEM?",
         ),
         cl.Starter(
-            label="🔬 Aree di ricerca",
-            message="Quali aree di ricerca sono attive al DIEM?",
+            label="👨‍💼 Direttore del dipartimento",
+            message="Chi è il direttore del DIEM?",
         ),
         cl.Starter(
-            label="🧪 Laboratori",
-            message="Quali laboratori sono disponibili al DIEM?",
+            label="🏠 Aule",
+            message=" Dove si trova l'aula 126?",
+        ),
+        cl.Starter(
+            label="🗳️ Organi colleggiali",
+            message=" Chi sono i membri della commissione paritetica del DIEM?",
+        ),
+        cl.Starter(
+            label="📝 Date degli esami",
+            message="Quando si tiene l'esame di Natural Language Processing and LLM",
         ),
     ]
 

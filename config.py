@@ -56,6 +56,10 @@ LLM_MODEL_NAME = "openai/gpt-oss-120b"
 # A smaller, faster model is sufficient for classification tasks.
 GUARDRAIL_MODEL_NAME = "meta-llama/llama-3.1-8b-instruct"
 
+LLM_MODEL_NAME_RAGAS = "nvidia/nemotron-3-super-120b-a12b:free"
+
+EMBEDDING_MODEL_NAME_RAGAS = "BAAI/bge-m3"
+
 # Maximum number of tokens the LLM may generate in a single call.
 LLM_MAX_NEW_TOKENS = 4096
 
@@ -227,6 +231,8 @@ MAX_GUARDRAIL_RETRIES = 1
 # ---------------------------------------------------------------------------
 # Output Guardrail Parameters
 # ---------------------------------------------------------------------------
+# Enable the output guardrail node.
+ENABLE_OUTPUT_GUARDRAIL = True
 
 # Faithfulness threshold for the LLM-based output guardrail (currently unused —
 # the active guardrail uses rule-based numeric code checking).
