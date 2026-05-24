@@ -55,3 +55,11 @@ Contesto chat
 1 Chi è Antonio Greco?
 
 2 Quali sono i corsi che insegna?
+
+Out of scope
+
+Chi è Matteo La Manna?
+
+Quando è avvenuta la seconda guerra mondiale?
+
+Quando si tiene l'esame di Diritto Privato alla facoltà di Giurisprudenza?

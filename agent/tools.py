@@ -5,14 +5,12 @@ Defines the LangChain tools exposed to the ReAct agent.
 
 Tools:
     search_diem           — retrieval on the full DIEM knowledge base.
-    search_easycourse     — retrieval for exam schedules and timetables.
     compute               — deterministic mathematical calculations.
     out_of_scope_response — standard fallback for unanswerable questions.
 
-search_faculty and search_courses have been consolidated into search_diem
-because without domain filtering they performed identical retrieval.
-The agent model (GPT-OSS 120B) already formulates optimised queries
-autonomously, making separate tools redundant.
+In this version a single search_diem tool covers the entire knowledge base
+without domain filtering. The agent model formulates optimised queries
+autonomously.
 """
 
 import logging
@@ -24,47 +22,25 @@ from retrieval.retriever import retrieve
 
 logger = logging.getLogger("DIEM_Tools")
 
-# ---------------------------------------------------------------------------
-# Retrieval pipeline initialisation
-# ---------------------------------------------------------------------------
-
 initialize_retriever()
+
 
 # ---------------------------------------------------------------------------
 # Internal formatting helper
 # ---------------------------------------------------------------------------
 
 def _format_docs(docs) -> str:
-    """
-    Formats a list of LangChain Documents into a structured string suitable
-    for injection into the ReAct agent scratchpad.
-
-    Document numbers are intentionally omitted to prevent the LLM from
-    citing [Document N] references instead of actual source URLs.
-
-    Args:
-        docs: List of LangChain Document objects returned by retrieve().
-
-    Returns:
-        A formatted string with document blocks separated by ---,
-        or a fallback message if no documents were retrieved.
-    """
     if not docs:
         return (
             "No relevant documents found in the DIEM knowledge base. "
             "The requested information may not be available in the "
             "indexed sources."
         )
-
     parts = []
     for doc in docs:
         source = doc.metadata.get("source", "Source not available")
         text = doc.page_content.strip()
-        parts.append(
-            f"[Source: {source}]\n"
-            f"{text}\n"
-            f"[End]"
-        )
+        parts.append(f"[Source: {source}]\n{text}\n[End]")
 
     header = (
         f"Found {len(docs)} relevant documents. "
@@ -75,7 +51,7 @@ def _format_docs(docs) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Search tools
+# Search tool
 # ---------------------------------------------------------------------------
 
 @tool
@@ -86,17 +62,16 @@ def search_diem(query: str) -> str:
     Mathematics (DIEM) of the University of Salerno.
 
     Use this tool for questions about:
-    - Degree programmes (which courses the DIEM offers, general overview)
-    - Specific courses: syllabus, study plan, CFU credits, prerequisites,
-      exam modalities, course timetables
+    - Degree programmes, course syllabi, study plans, CFU credits,
+      prerequisites, exam modalities, and course timetables.
     - Faculty members: office hours, curriculum, research, publications,
-      laboratory affiliations, contact information
-    - Department location, facilities, laboratories, and equipment
-    - Erasmus and international mobility programmes
-    - Internship opportunities and academic procedures
-    - Research areas, funded projects, and spin-offs
-    - Committees, delegates, and administrative contacts
-    - Department regulations and official notices
+      laboratory affiliations, and contact information.
+    - Department location, facilities, laboratories, and equipment.
+    - Erasmus and international mobility programmes.
+    - Internship opportunities and academic procedures.
+    - Research areas, funded projects, and spin-offs.
+    - Committees, delegates, and administrative contacts.
+    - Department regulations, official notices, and exam grade formulas.
 
     If the question covers multiple distinct topics, call this tool
     multiple times with focused queries.
@@ -115,32 +90,6 @@ def search_diem(query: str) -> str:
     return result
 
 
-@tool
-def search_easycourse(query: str) -> str:
-    """
-    Searches the DIEM knowledge base for exam schedules and course
-    timetables from the EasyCourse platform (easycourse.unisa.it).
-
-    Use this tool when the user asks about:
-    - Exam dates and sessions (appelli d'esame)
-    - Course timetables and classroom assignments
-    - Exam session calendars (sessione invernale, estiva, autunnale)
-
-    Args:
-        query: A natural language query about schedules or exam dates,
-               e.g. 'appelli Intelligenza Artificiale sessione estiva' or
-               'orario lezioni Ingegneria Informatica secondo semestre'.
-
-    Returns:
-        Formatted document excerpts with source URLs.
-    """
-    logger.info(f"[search_easycourse] Query: '{query}'")
-    docs = retrieve(query)
-    result = _format_docs(docs)
-    logger.info(f"[search_easycourse] Returning {len(docs)} document(s).")
-    return result
-
-
 # ---------------------------------------------------------------------------
 # Compute tool
 # ---------------------------------------------------------------------------
@@ -148,19 +97,23 @@ def search_easycourse(query: str) -> str:
 @tool
 def compute(expression: str) -> str:
     """
-    Evaluates a mathematical expression and returns the result.
+    Evaluates a mathematical expression and returns the numeric result.
 
     Use this tool after retrieving the relevant formula from the knowledge
-    base with search_diem. Apply the formula to the numerical values
-    provided by the user and pass the resulting expression here.
+    base with search_diem. Substitute the user's values into the formula
+    exactly as written in the retrieved document, then pass the resulting
+    expression here.
+
+    The result returned is the final numeric value — do NOT divide,
+    multiply, or transform it further after receiving it.
 
     Supported operations: +, -, *, /, **, //, %, (, )
     Supported functions: round(), abs(), min(), max()
 
     Examples:
+        compute("4.1 * 28.8 - 8.8")
         compute("(28 * 3 + 30 * 6 + 27 * 9) / (3 + 6 + 9)")
-        compute("round(28.8 * 110 / 30, 2)")
-        compute("(18 * 0.4 + 28 * 0.6)")
+        compute("round(105.6, 0)")
 
     Args:
         expression: A mathematical expression as a string.
@@ -245,13 +198,8 @@ def out_of_scope_response(reason: str) -> str:
     Returns a standard fallback response when the requested information
     is not available in the DIEM knowledge base.
 
-    Use this tool when:
-    - search_diem returned no relevant documents for the query.
-    - The question is outside the scope of the DIEM knowledge base.
-    - You have already tried search_diem and found nothing useful.
-
-    Do NOT use this tool as a shortcut to avoid searching — always attempt
-    retrieval with search_diem first.
+    Use this tool ONLY when search_diem returned no relevant documents
+    after a genuine search attempt. Do NOT use this as a shortcut.
 
     Args:
         reason: A brief description of why the information was not found.
@@ -274,7 +222,6 @@ def out_of_scope_response(reason: str) -> str:
 
 DIEM_TOOLS = [
     search_diem,
-    search_easycourse,
     compute,
     out_of_scope_response,
 ]

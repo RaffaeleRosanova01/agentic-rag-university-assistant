@@ -80,7 +80,7 @@ RERANKER_MODEL_NAME_OPENROUTER = "cohere/rerank-4-pro"
 # ---------------------------------------------------------------------------
 
 # Primary embedding model — superior on multilingual benchmarks (570M params).
-EMBEDDING_MODEL_NAME = "BAAI/bge-m3"   #"BAAI/bge-m3" # "Qwen/Qwen3-Embedding-0.6B"
+EMBEDDING_MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"   #"BAAI/bge-m3" # "Qwen/Qwen3-Embedding-0.6B"
 
 # Device for embedding inference. Auto-selects CUDA if available.
 import torch as _torch
@@ -231,11 +231,3 @@ MAX_GUARDRAIL_RETRIES = 1
 # Faithfulness threshold for the LLM-based output guardrail (currently unused —
 # the active guardrail uses rule-based numeric code checking).
 FAITHFULNESS_THRESHOLD = 0.8
-
-# Enable the output guardrail node.
-ENABLE_OUTPUT_GUARDRAIL = True
-
-
-# Hybrid search weights for RRF (dense + BM25)
-HYBRID_DENSE_WEIGHT  = 0.6
-HYBRID_SPARSE_WEIGHT = 0.4
