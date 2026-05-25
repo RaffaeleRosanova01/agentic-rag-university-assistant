@@ -233,7 +233,3 @@ MAX_GUARDRAIL_RETRIES = 1
 # ---------------------------------------------------------------------------
 # Enable the output guardrail node.
 ENABLE_OUTPUT_GUARDRAIL = True
-
-# Faithfulness threshold for the LLM-based output guardrail (currently unused —
-# the active guardrail uses rule-based numeric code checking).
-FAITHFULNESS_THRESHOLD = 0.8

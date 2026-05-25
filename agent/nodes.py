@@ -1,46 +1,31 @@
 """
 Nodes module for the DIEM Agentic RAG project.
 
-Implements three nodes for the LangGraph agent graph:
+Implements two nodes for the LangGraph agent graph:
 
-    agent_node:            Invokes the LLM with bound tools. Forces a tool
-                           call if the model attempts to answer without
-                           retrieving documents first. Enforces the iteration
-                           limit via MAX_AGENT_ITERATIONS.
+    agent_node:         Invokes the LLM with bound tools. Forces a tool
+                        call if the model attempts to answer without
+                        retrieving documents first. Enforces the iteration
+                        limit via MAX_AGENT_ITERATIONS.
 
-    tool_executor_node:    Executes pending tool calls, accumulates retrieved
-                           context in state, increments iteration_count.
+    tool_executor_node: Executes pending tool calls, accumulates retrieved
+                        context in state, increments iteration_count.
 
-    output_guardrail_node: Lightweight LLM safety check on the final answer.
-                           Checks for offensive content or private personal
-                           information. Allows one retry before falling back.
-                           Controlled by ENABLE_OUTPUT_GUARDRAIL.
+The output guardrail node has been moved to guardrails/output_guard.py.
 """
 
 import logging
 from typing import Dict
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 import config
-from agent.prompts import OUTPUT_GUARDRAIL_PROMPT, build_agent_system_prompt
+from agent.prompts import build_agent_system_prompt
 from agent.state import AgentState
 
 logger = logging.getLogger("DIEM_Nodes")
-
-# ---------------------------------------------------------------------------
-# Fallback message
-# ---------------------------------------------------------------------------
-
-HALLUCINATION_FALLBACK = (
-    "Mi dispiace, non sono riuscito a trovare informazioni sufficientemente "
-    "affidabili per rispondere a questa domanda. "
-    "Ti consiglio di consultare direttamente il sito ufficiale del DIEM: "
-    "https://www.diem.unisa.it"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -214,119 +199,3 @@ def build_tool_executor_node(tools: list):
         }
 
     return tool_executor_node
-
-
-# ---------------------------------------------------------------------------
-# Output Guardrail Node
-# ---------------------------------------------------------------------------
-
-def build_output_guardrail_node(guardrail_llm: BaseChatModel):
-    """
-    Returns a node that validates the final answer with a lightweight LLM
-    safety check — single prompt, single call, ~1-2s latency.
-
-    Checks for:
-        - Offensive or discriminatory language
-        - Private personal information not publicly available
-        - Content entirely unrelated to academic topics
-
-    On BLOCK, one retry is allowed before the fallback message is returned.
-    Controlled by ENABLE_OUTPUT_GUARDRAIL in config.
-
-    --- How to add hallucination detection ---
-    Add a second LLM call after the safety check using this prompt:
-
-        Given the retrieved context and the assistant's answer, rate
-        confidence that every factual claim is supported by the context.
-        Reply with ONLY: HIGH, MEDIUM, or LOW.
-
-    Pass {"context": retrieved_context, "answer": final_answer} as input.
-    On LOW confidence, call _handle_guardrail_failure() with reason
-    "low confidence — possible hallucination".
-    On MEDIUM, log a warning but allow through.
-    On HIGH, pass.
-
-    Args:
-        guardrail_llm: A lightweight LangChain chat model instance used
-                       exclusively for the output safety check.
-
-    Returns:
-        A callable node function compatible with LangGraph's StateGraph.
-    """
-    if not config.ENABLE_OUTPUT_GUARDRAIL:
-        def noop(state: AgentState) -> Dict:
-            return {}
-        return noop
-
-    llm_chain = OUTPUT_GUARDRAIL_PROMPT | guardrail_llm | StrOutputParser()
-
-    def output_guardrail_node(state: AgentState) -> Dict:
-        final_answer = state.get("final_answer", "")
-        retry_count = state.get("retry_count", 0)
-
-        if not final_answer.strip():
-            logger.info("[OutputGuardrail] Empty answer. Skipping.")
-            return {}
-
-        logger.info("[OutputGuardrail] Starting safety check...")
-
-        try:
-            raw = llm_chain.invoke({"response": final_answer}).strip().upper()
-            logger.info(f"[OutputGuardrail] Safety check result: '{raw}'")
-
-            if "BLOCK" in raw:
-                return _handle_guardrail_failure(
-                    state, retry_count,
-                    reason="offensive or private content",
-                )
-
-        except Exception as exc:
-            logger.error(f"[OutputGuardrail] Safety check failed: {exc}. Failing open.")
-
-        logger.info("[OutputGuardrail] Response passed safety check.")
-        return {}
-
-    return output_guardrail_node
-
-
-# ---------------------------------------------------------------------------
-# Guardrail failure handler
-# ---------------------------------------------------------------------------
-
-def _handle_guardrail_failure(
-    state: AgentState,
-    retry_count: int,
-    reason: str,
-) -> Dict:
-    """
-    Handles a guardrail failure by either allowing a retry or returning
-    the fallback message.
-
-    Args:
-        state:       The current AgentState.
-        retry_count: The current retry count from state.
-        reason:      A short description of why the check failed.
-
-    Returns:
-        A state update dict routing to retry or fallback.
-    """
-    logger.warning(f"[OutputGuardrail] Check FAILED: {reason}.")
-
-    if retry_count < config.MAX_GUARDRAIL_RETRIES:
-        logger.info("[OutputGuardrail] Retry allowed.")
-        corrective = SystemMessage(
-            content=(
-                "Your previous answer violated the response guidelines. "
-                "Please generate a new answer using ONLY information explicitly "
-                "present in the retrieved context, without offensive content or "
-                "private personal information."
-            )
-        )
-        return {
-            "messages": [corrective],
-            "final_answer": "",
-            "retry_count": retry_count + 1,
-        }
-
-    logger.warning("[OutputGuardrail] Max retries reached. Using fallback.")
-    return {"final_answer": HALLUCINATION_FALLBACK}

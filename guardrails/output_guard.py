@@ -1,41 +1,36 @@
 """
 Output guardrail module for the DIEM Agentic RAG project.
 
-Implements faithfulness-based hallucination detection as described in the
-RAGAS evaluation framework. Instead of asking the LLM for a single binary
-judgment over the full context, the response is decomposed into atomic
-claims which are then verified individually against the retrieved context.
+Implements a safety check on the final answer produced by the agent.
+The check is performed via a single lightweight LLM call using the
+OUTPUT_GUARDRAIL_PROMPT defined in agent.prompts.
 
-Faithfulness = #supported_claims / #total_claims
+The guardrail blocks responses that contain:
+    - Offensive, discriminatory, or harmful language.
+    - Private personal information not typically public.
+    - Content entirely unrelated to university or academic topics.
 
-A response is considered grounded if its faithfulness score meets or
-exceeds config.FAITHFULNESS_THRESHOLD (default: 0.8). This tolerates
-minor inaccuracies (e.g. a single wrong course code among many correct
-ones) without blocking the entire response.
+On BLOCK, one retry is allowed: the agent is asked to regenerate the
+answer with an explicit corrective instruction. If the retry limit is
+reached, the fallback message is returned instead.
 
-Pipeline:
-    1. Extract atomic claims from the response (LLM call, JSON output).
-    2. Verify each claim against the retrieved context in a single batch
-       call, receiving a JSON list of YES/NO verdicts.
-    3. Compute faithfulness score and compare against threshold.
+The check is skipped entirely when ENABLE_OUTPUT_GUARDRAIL is False
+in config (noop node).
 
 Special cases:
-    - Empty retrieved context: check is skipped (conversational response).
-    - No claims extracted: response is passed through (fail-open).
+    - Empty final_answer: check is skipped.
     - Any LLM call failure: response is passed through (fail-open policy).
-
-The guardrail uses a dedicated lightweight LLM (config.GUARDRAIL_MODEL_NAME)
-separate from the generation model to reduce cost and latency.
 """
 
-import json
 import logging
-import re
-from typing import Dict, List
+from typing import Dict
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import SystemMessage
+from langchain_core.output_parsers import StrOutputParser
 
+import config
+from agent.prompts import OUTPUT_GUARDRAIL_PROMPT
 from agent.state import AgentState
 
 logger = logging.getLogger("DIEM_OutputGuardrail")
@@ -52,140 +47,46 @@ HALLUCINATION_FALLBACK = (
 )
 
 # ---------------------------------------------------------------------------
-# Prompts
+# Guardrail failure handler
 # ---------------------------------------------------------------------------
 
-_CLAIM_EXTRACTION_SYSTEM = """You are a claim extraction assistant.
-Given an answer, extract all atomic factual claims it makes.
-Each claim must be a single, self-contained statement that can be
-verified independently.
-
-Return ONLY a JSON array of strings, with no explanation or preamble.
-Example output: ["Claim 1.", "Claim 2.", "Claim 3."]
-
-If the answer contains no verifiable factual claims (e.g. it only says
-information was not found), return an empty array: []"""
-
-_CLAIM_VERIFICATION_SYSTEM = """You are a fact-checking assistant.
-Given a list of claims and a set of source documents, determine whether
-each claim is supported by the source documents.
-
-Return ONLY a JSON array of "YES" or "NO" verdicts, one per claim,
-in the same order as the input claims. No explanation or preamble.
-Example output: ["YES", "NO", "YES"]
-
-A claim is supported if its content can be inferred from the source
-documents, even if not stated verbatim. A claim is NOT supported if it
-contains specific values (codes, dates, numbers, URLs) that do not appear
-anywhere in the source documents."""
-
-# ---------------------------------------------------------------------------
-# Claim extraction
-# ---------------------------------------------------------------------------
-
-def _extract_claims(llm: BaseChatModel, answer: str) -> List[str]:
+def _handle_guardrail_failure(
+    state: AgentState,
+    retry_count: int,
+    reason: str,
+) -> Dict:
     """
-    Extracts atomic factual claims from the generated answer.
+    Handles a guardrail failure by either allowing a retry or returning
+    the fallback message.
 
     Args:
-        llm:    The guardrail LLM instance.
-        answer: The generated answer string.
+        state:       The current AgentState.
+        retry_count: The current retry count from state.
+        reason:      A short description of why the check failed.
 
     Returns:
-        A list of atomic claim strings, or an empty list if extraction
-        fails or the answer contains no verifiable claims.
+        A state update dict routing to retry or fallback.
     """
-    messages = [
-        SystemMessage(content=_CLAIM_EXTRACTION_SYSTEM),
-        HumanMessage(content=f"Answer:\n{answer}"),
-    ]
+    logger.warning(f"[OutputGuardrail] Check FAILED: {reason}.")
 
-    try:
-        raw = llm.invoke(messages).content
-        if isinstance(raw, list):
-            raw = " ".join(
-                b.get("text", "") if isinstance(b, dict) else str(b)
-                for b in raw
+    if retry_count < config.MAX_GUARDRAIL_RETRIES:
+        logger.info("[OutputGuardrail] Retry allowed.")
+        corrective = SystemMessage(
+            content=(
+                "Your previous answer violated the response guidelines. "
+                "Please generate a new answer using ONLY information explicitly "
+                "present in the retrieved context, without offensive content or "
+                "private personal information."
             )
+        )
+        return {
+            "messages": [corrective],
+            "final_answer": "",
+            "retry_count": retry_count + 1,
+        }
 
-        # Strip markdown code fences if present.
-        raw = re.sub(r"```(?:json)?", "", raw).strip()
-        claims = json.loads(raw)
-
-        if not isinstance(claims, list):
-            logger.warning("[OutputGuardrail] Claim extraction returned non-list. Skipping.")
-            return []
-
-        claims = [str(c).strip() for c in claims if str(c).strip()]
-        logger.info(f"[OutputGuardrail] Extracted {len(claims)} claim(s).")
-        return claims
-
-    except Exception as exc:
-        logger.error(f"[OutputGuardrail] Claim extraction failed: {exc}")
-        return []
-
-
-# ---------------------------------------------------------------------------
-# Claim verification
-# ---------------------------------------------------------------------------
-
-def _verify_claims(
-    llm: BaseChatModel,
-    claims: List[str],
-    context: str,
-) -> List[bool]:
-    """
-    Verifies each claim against the retrieved context in a single batch call.
-
-    Args:
-        llm:     The guardrail LLM instance.
-        claims:  List of atomic claim strings to verify.
-        context: The retrieved context string (synthetic source list).
-
-    Returns:
-        A list of booleans (True = supported) in the same order as claims.
-        On failure, returns a list of True values (fail-open).
-    """
-    claims_text = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(claims))
-
-    messages = [
-        SystemMessage(content=_CLAIM_VERIFICATION_SYSTEM),
-        HumanMessage(content=(
-            f"Source documents:\n{context}\n\n"
-            f"Claims to verify:\n{claims_text}"
-        )),
-    ]
-
-    try:
-        raw = llm.invoke(messages).content
-        if isinstance(raw, list):
-            raw = " ".join(
-                b.get("text", "") if isinstance(b, dict) else str(b)
-                for b in raw
-            )
-
-        raw = re.sub(r"```(?:json)?", "", raw).strip()
-        verdicts = json.loads(raw)
-
-        if not isinstance(verdicts, list) or len(verdicts) != len(claims):
-            logger.warning(
-                f"[OutputGuardrail] Verdict count mismatch "
-                f"(expected {len(claims)}, got {len(verdicts) if isinstance(verdicts, list) else 'non-list'}). "
-                "Failing open."
-            )
-            return [True] * len(claims)
-
-        results = [str(v).strip().upper() == "YES" for v in verdicts]
-
-        for i, (claim, supported) in enumerate(zip(claims, results), 1):
-            verdict_str = "SUPPORTED" if supported else "NOT SUPPORTED"
-            logger.info(f"[OutputGuardrail]   Claim {i}: {verdict_str} — {claim[:80]}")
-
-        return results
-
-    except Exception as exc:
-        logger.error(f"[OutputGuardrail] Claim verification failed: {exc}. Failing open.")
-        return [True] * len(claims)
+    logger.warning("[OutputGuardrail] Max retries reached. Using fallback.")
+    return {"final_answer": HALLUCINATION_FALLBACK}
 
 
 # ---------------------------------------------------------------------------
@@ -194,76 +95,54 @@ def _verify_claims(
 
 def build_output_guardrail_node(llm: BaseChatModel):
     """
-    Returns a node function that performs faithfulness-based hallucination
-    detection using the provided LLM.
+    Returns a node function that performs a safety check on the final
+    answer using the provided LLM.
 
-    The faithfulness score is computed as:
-        faithfulness = #supported_claims / #total_claims
-
-    The response is blocked only if faithfulness < config.FAITHFULNESS_THRESHOLD,
-    allowing responses with minor inaccuracies to pass through.
+    The check uses a single prompt (OUTPUT_GUARDRAIL_PROMPT) and a single
+    LLM call. On BLOCK, one retry is allowed before the fallback message
+    is returned. The node is disabled when ENABLE_OUTPUT_GUARDRAIL is
+    False in config.
 
     Args:
-        llm: A LangChain chat model instance used for claim extraction and
-             verification. Should be a lightweight model (e.g. qwen3-8b).
+        llm: A LangChain chat model instance used for the safety check.
+             Should be a lightweight model (e.g. qwen3-8b).
 
     Returns:
-        A callable node function that accepts an AgentState dict and returns
-        a dict with an updated 'final_answer' field if hallucination is
-        detected, or an empty dict otherwise.
+        A callable node function that accepts an AgentState dict and
+        returns a dict with an updated 'final_answer' and routing fields
+        if the check fails, or an empty dict otherwise.
     """
-    import config
+    if not config.ENABLE_OUTPUT_GUARDRAIL:
+        def noop(state: AgentState) -> Dict:
+            return {}
+        return noop
+
+    llm_chain = OUTPUT_GUARDRAIL_PROMPT | llm | StrOutputParser()
 
     def output_guardrail_node(state: AgentState) -> Dict:
         final_answer = state.get("final_answer", "")
-        retrieved_context = state.get("retrieved_context", "")
+        retry_count = state.get("retry_count", 0)
 
-        # Skip check if no context was retrieved (conversational response).
-        if not retrieved_context.strip():
-            logger.info(
-                "[OutputGuardrail] No retrieved context. "
-                "Skipping faithfulness check."
-            )
+        if not final_answer.strip():
+            logger.info("[OutputGuardrail] Empty answer. Skipping.")
             return {}
 
-        logger.info("[OutputGuardrail] Starting faithfulness verification...")
-        logger.info(
-            f"[OutputGuardrail] Guardrail context length: "
-            f"{len(retrieved_context)} chars"
-        )
+        logger.info("[OutputGuardrail] Starting safety check...")
 
-        # Step 1 — Extract atomic claims from the response.
-        claims = _extract_claims(llm, final_answer)
+        try:
+            raw = llm_chain.invoke({"response": final_answer}).strip().upper()
+            logger.info(f"[OutputGuardrail] Safety check result: '{raw}'")
 
-        if not claims:
-            logger.info(
-                "[OutputGuardrail] No verifiable claims found. "
-                "Passing response through."
-            )
-            return {}
+            if "BLOCK" in raw:
+                return _handle_guardrail_failure(
+                    state, retry_count,
+                    reason="offensive or private content",
+                )
 
-        # Step 2 — Verify each claim against the retrieved context.
-        verdicts = _verify_claims(llm, claims, retrieved_context)
+        except Exception as exc:
+            logger.error(f"[OutputGuardrail] Safety check failed: {exc}. Failing open.")
 
-        # Step 3 — Compute faithfulness score.
-        supported = sum(verdicts)
-        total = len(verdicts)
-        faithfulness = supported / total
-
-        logger.info(
-            f"[OutputGuardrail] Faithfulness: {supported}/{total} = "
-            f"{faithfulness:.2f} (threshold: {config.FAITHFULNESS_THRESHOLD})"
-        )
-
-        if faithfulness < config.FAITHFULNESS_THRESHOLD:
-            logger.warning(
-                f"[OutputGuardrail] Faithfulness {faithfulness:.2f} below "
-                f"threshold {config.FAITHFULNESS_THRESHOLD}. "
-                "Replacing response with fallback."
-            )
-            return {"final_answer": HALLUCINATION_FALLBACK}
-
-        logger.info("[OutputGuardrail] Response verified as grounded.")
+        logger.info("[OutputGuardrail] Response passed safety check.")
         return {}
 
     return output_guardrail_node

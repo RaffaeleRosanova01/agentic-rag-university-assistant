@@ -14,7 +14,7 @@ Flow:
       └─ PASS
            │
            ▼
-         agent  ◄─────────────────────────────────────────────┐
+         agent  ◄──────────────────────────────────────────────┐
            │                                                   │
            ├─ tool_calls                                       │
            │       │                                           │
@@ -46,14 +46,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 
-from agent.nodes import (
-    build_agent_node,
-    build_output_guardrail_node,
-    build_tool_executor_node,
-)
+from agent.nodes import build_agent_node, build_tool_executor_node
 from agent.state import AgentState
 from agent.tools import DIEM_TOOLS
 from guardrails.input_guard import build_input_guardrail_node
+from guardrails.output_guard import build_output_guardrail_node
 
 logger = logging.getLogger("DIEM_Graph")
 
