@@ -260,67 +260,92 @@ def run_query(graph, query: str) -> tuple[str, list[str]]:
 
 def build_ragas_dataset(samples: list):
     """
-    Converts collected samples into a RAGAS-compatible HuggingFace Dataset.
-
+    Converts collected samples into a RAGAS v0.4-compatible EvaluationDataset.
+ 
+    Each sample is converted into a SingleTurnSample using the field mapping
+    required by the v0.4 API:
+        question            → user_input
+        answer              → response
+        contexts            → retrieved_contexts
+        ground_truth        → reference
+ 
     Args:
         samples: List of dicts with keys: question, answer, contexts,
                  ground_truth, ground_truth_contexts.
-
+ 
     Returns:
-        A HuggingFace Dataset ready for RAGAS evaluation.
+        A RAGAS EvaluationDataset instance ready for evaluation.
     """
-    from datasets import Dataset
-
-    data = {
-        "question":  [s["question"]  for s in samples],
-        "answer":    [s["answer"]    for s in samples],
-        "contexts":  [s["contexts"]  for s in samples],
-        "ground_truth": [s["ground_truth"] for s in samples],
-    }
-    return Dataset.from_dict(data)
+    from ragas import EvaluationDataset, SingleTurnSample
+ 
+    ragas_samples = [
+        SingleTurnSample(
+            user_input=s["question"],
+            response=s["answer"],
+            retrieved_contexts=s["contexts"],
+            reference=s["ground_truth"],
+        )
+        for s in samples
+    ]
+    return EvaluationDataset(samples=ragas_samples)
 
 
 def run_ragas_evaluation(dataset, llm_for_ragas, embeddings_for_ragas) -> dict:
     """
     Runs RAGAS evaluation on the dataset.
-
+ 
     Metrics:
-        - context_precision  (requires ground_truth)
-        - context_recall     (requires ground_truth)
-        - faithfulness       (LLM judge, no ground_truth needed)
-        - answer_relevancy   (embedding similarity, no ground_truth needed)
-
+        - LLMContextPrecisionWithReference  (requires reference)
+        - LLMContextRecall                  (requires reference)
+        - Faithfulness                      (LLM judge, no reference needed)
+        - ResponseRelevancy                 (embedding similarity, no reference needed)
+ 
+    The LLM and embeddings are wrapped in the RAGAS v0.4 wrappers before
+    being passed to the metrics. Evaluation is serialized (max_workers=1)
+    to stay within the rate limit of free-tier LLM providers. Each failed
+    job is retried up to 10 times with a maximum wait of 60 seconds before
+    being recorded as NaN.
+ 
     Args:
-        dataset:              HuggingFace Dataset with evaluation samples.
-        llm_for_ragas:        LangChain LLM instance used by RAGAS as judge.
-        embeddings_for_ragas: LangChain Embeddings instance used by RAGAS.
-
+        dataset:              RAGAS EvaluationDataset instance.
+        llm_for_ragas:        LangChain chat model instance used by RAGAS as judge.
+        embeddings_for_ragas: LangChain embeddings instance used by RAGAS.
+ 
     Returns:
         RAGAS EvaluationResult object (supports .to_pandas()).
     """
     from ragas import evaluate
+    from ragas.llms import LangchainLLMWrapper
+    from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.metrics import (
-        answer_relevancy,
-        context_precision,
-        context_recall,
-        faithfulness,
+        LLMContextPrecisionWithReference,
+        LLMContextRecall,
+        Faithfulness,
+        ResponseRelevancy,
     )
-
+    from ragas.run_config import RunConfig
+ 
+    ragas_llm = LangchainLLMWrapper(llm_for_ragas)
+    ragas_embeddings = LangchainEmbeddingsWrapper(embeddings_for_ragas)
+ 
     metrics = [
-        context_precision,
-        context_recall,
-        faithfulness,
-        answer_relevancy,
+        LLMContextPrecisionWithReference(llm=ragas_llm),
+        LLMContextRecall(llm=ragas_llm),
+        Faithfulness(llm=ragas_llm),
+        ResponseRelevancy(llm=ragas_llm, embeddings=ragas_embeddings),
     ]
-
+ 
     result = evaluate(
         dataset=dataset,
         metrics=metrics,
-        llm=llm_for_ragas,
-        embeddings=embeddings_for_ragas,
+        run_config=RunConfig(
+            max_workers=16,
+            max_wait=60,
+            max_retries=5,
+            timeout=300
+        ),
     )
     return result
-
 
 # ---------------------------------------------------------------------------
 # Plotting
@@ -338,8 +363,8 @@ def plot_summary_bar(df, output_path: str) -> None:
     import numpy as np
 
     metric_cols = [
-        "context_precision",
-        "context_recall",
+        "llm_context_precision_with_reference",
+        "llm_context_recall",
         "faithfulness",
         "answer_relevancy",
     ]
@@ -401,8 +426,8 @@ def plot_heatmap(df, output_path: str) -> None:
     import numpy as np
 
     metric_cols = [
-        "context_precision",
-        "context_recall",
+        "llm_context_precision_with_reference",
+        "llm_context_recall",
         "faithfulness",
         "answer_relevancy",
     ]
@@ -410,7 +435,7 @@ def plot_heatmap(df, output_path: str) -> None:
 
     # Shorten questions for display.
     questions = []
-    for q in df["question"].tolist():
+    for q in df["user_input"].tolist():
         short = q[:55] + "…" if len(q) > 55 else q
         questions.append(short)
 
@@ -469,6 +494,8 @@ def plot_heatmap(df, output_path: str) -> None:
 def main():
     print("=== DIEM Agentic RAG: RAGAS Evaluation ===\n")
 
+    results_path = "evaluation_results.json"
+
     # ------------------------------------------------------------------
     # Check ground truths are filled
     # ------------------------------------------------------------------
@@ -483,52 +510,48 @@ def main():
         )
 
     # ------------------------------------------------------------------
-    # System initialization
+    # Run queries and collect results (skipped if cache exists)
     # ------------------------------------------------------------------
-    print("[Eval] Initializing system...")
-    from core import initialize_system
-    graph = initialize_system()
-    print("[Eval] System ready.\n")
+    if os.path.exists(results_path):
+        print(f"[Eval] Found existing results at '{results_path}'. Skipping query execution.")
+        with open(results_path, "r", encoding="utf-8") as fh:
+            samples = json.load(fh)
+        print(f"[Eval] Loaded {len(samples)} samples from cache.\n")
+    else:
+        print("[Eval] Initializing system...")
+        from core import initialize_system
+        graph = initialize_system()
+        print("[Eval] System ready.\n")
 
-    # ------------------------------------------------------------------
-    # Run queries and collect results
-    # ------------------------------------------------------------------
-    samples = []
-    total = len(EVAL_DATASET)
+        samples = []
+        total = len(EVAL_DATASET)
 
-    for i, entry in enumerate(EVAL_DATASET, 1):
-        question = entry["question"]
-        print(f"[Eval] [{i}/{total}] Query: {question[:70]}")
+        for i, entry in enumerate(EVAL_DATASET, 1):
+            question = entry["question"]
+            print(f"[Eval] [{i}/{total}] Query: {question[:70]}")
 
-        try:
-            answer, contexts = run_query(graph, question)
-        except Exception as exc:
-            print(f"[Eval]   ERROR: {exc}")
-            answer = ""
-            contexts = []
+            try:
+                answer, contexts = run_query(graph, question)
+            except Exception as exc:
+                print(f"[Eval]   ERROR: {exc}")
+                answer = ""
+                contexts = []
 
-        # Merge retrieved contexts with ground truth context URLs if provided.
-        # Retrieved contexts are the actual text chunks; ground_truth_contexts
-        # are reference URLs used only for manual inspection, not passed to RAGAS.
-        samples.append({
-            "question":             question,
-            "answer":               answer,
-            "contexts":             contexts if contexts else [""],
-            "ground_truth":         entry["ground_truth"],
-            "ground_truth_contexts": entry.get("ground_truth_contexts", []),
-        })
+            samples.append({
+                "question":              question,
+                "answer":                answer,
+                "contexts":              contexts if contexts else [""],
+                "ground_truth":          entry["ground_truth"],
+                "ground_truth_contexts": entry.get("ground_truth_contexts", []),
+            })
 
-        print(f"[Eval]   Answer: {answer[:100]}{'...' if len(answer) > 100 else ''}")
-        print(f"[Eval]   Contexts retrieved: {len(contexts)}")
-        time.sleep(1)  # Avoid rate limiting on OpenRouter
+            print(f"[Eval]   Answer: {answer[:100]}{'...' if len(answer) > 100 else ''}")
+            print(f"[Eval]   Contexts retrieved: {len(contexts)}")
+            time.sleep(1)  # Avoid rate limiting on OpenRouter
 
-    # ------------------------------------------------------------------
-    # Save raw results
-    # ------------------------------------------------------------------
-    results_path = "evaluation_results.json"
-    with open(results_path, "w", encoding="utf-8") as fh:
-        json.dump(samples, fh, ensure_ascii=False, indent=2)
-    print(f"\n[Eval] Raw results saved to {results_path}")
+        with open(results_path, "w", encoding="utf-8") as fh:
+            json.dump(samples, fh, ensure_ascii=False, indent=2)
+        print(f"\n[Eval] Raw results saved to '{results_path}'")
 
     # ------------------------------------------------------------------
     # RAGAS evaluation
@@ -541,7 +564,6 @@ def main():
         print("[Eval] ERROR: ragas not installed. Run: pip install ragas")
         sys.exit(1)
 
-    # LLM judge: same model used by the agent, via OpenRouter.
     import config
     from langchain_openai import ChatOpenAI
     from langchain_huggingface import HuggingFaceEmbeddings
@@ -551,11 +573,11 @@ def main():
         temperature=0,
         api_key=config.OPENROUTER_API_KEY,
         base_url=config.OPENROUTER_BASE_URL,
-        max_tokens=1024,
+        max_tokens=4096,
+        n=1,
     )
     print(f"[Eval] Using LLM judge: {config.LLM_MODEL_NAME_RAGAS} via OpenRouter.")
 
-    # Embeddings for answer_relevancy: same local model used by the retriever.
     ragas_embeddings = HuggingFaceEmbeddings(
         model_name=config.EMBEDDING_MODEL_NAME_RAGAS,
         cache_folder=config.MODELS_DIR,
@@ -573,8 +595,8 @@ def main():
     # Print summary
     # ------------------------------------------------------------------
     metric_cols = [
-        "context_precision",
-        "context_recall",
+        "llm_context_precision_with_reference",
+        "llm_context_recall",
         "faithfulness",
         "answer_relevancy",
     ]

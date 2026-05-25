@@ -56,7 +56,7 @@ LLM_MODEL_NAME = "openai/gpt-oss-120b"
 # A smaller, faster model is sufficient for classification tasks.
 GUARDRAIL_MODEL_NAME = "meta-llama/llama-3.1-8b-instruct"
 
-LLM_MODEL_NAME_RAGAS = "nvidia/nemotron-3-super-120b-a12b:free"
+LLM_MODEL_NAME_RAGAS = "openai/gpt-oss-120b"
 
 EMBEDDING_MODEL_NAME_RAGAS = "BAAI/bge-m3"
 
@@ -84,7 +84,7 @@ RERANKER_MODEL_NAME_OPENROUTER = "cohere/rerank-4-pro"
 # ---------------------------------------------------------------------------
 
 # Primary embedding model — superior on multilingual benchmarks (570M params).
-EMBEDDING_MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"   #"BAAI/bge-m3" # "Qwen/Qwen3-Embedding-0.6B"
+EMBEDDING_MODEL_NAME = "BAAI/bge-m3"   #"BAAI/bge-m3" # "Qwen/Qwen3-Embedding-0.6B"
 
 # Device for embedding inference. Auto-selects CUDA if available.
 import torch as _torch
