@@ -1,19 +1,28 @@
 """
-Tools module for the DIEM Agentic RAG project.
+Tools module for the DIEM Agentic RAG project — multi-tool version.
 
 Defines the LangChain tools exposed to the ReAct agent.
 
 Tools:
-    search_diem           — retrieval on the full DIEM knowledge base.
+    search_faculty        — retrieval filtered to faculty profiles (docenti).
+    search_courses        — retrieval filtered to course/degree documents.
+    search_department     — retrieval filtered to department pages (diem).
     compute               — deterministic mathematical calculations.
     out_of_scope_response — standard fallback for unanswerable questions.
 
-In this version a single search_diem tool covers the entire knowledge base
-without domain filtering. The agent model formulates optimised queries
-autonomously.
+Domain filters applied at ChromaDB level:
+    search_faculty    → domain = "docenti", optional section_type filter
+    search_courses    → domain IN ["corsi", "easycourse"], optional section_type filter
+    search_department → domain = "diem", optional section_type filter
+
+Each tool targets a specific subset of the knowledge base, reducing noise
+from unrelated documents and improving retrieval precision.
+For queries spanning multiple domains, the agent calls the relevant tools
+sequentially.
 """
 
 import logging
+from typing import Optional
 
 from langchain_core.tools import tool
 
@@ -24,10 +33,41 @@ logger = logging.getLogger("DIEM_Tools")
 
 initialize_retriever()
 
+# ---------------------------------------------------------------------------
+# Metadata filters
+# ---------------------------------------------------------------------------
+
+_FILTER_FACULTY = {"domain": {"$eq": "docenti"}}
+
+_FILTER_COURSES = {"domain": {"$in": ["corsi", "easycourse"]}}
+
+_FILTER_DEPARTMENT = {"domain": {"$eq": "diem"}}
+
 
 # ---------------------------------------------------------------------------
-# Internal formatting helper
+# Internal helpers
 # ---------------------------------------------------------------------------
+
+def _build_filter(domain_filter: dict, section_type: Optional[str]) -> dict:
+    """
+    Combines a domain filter with an optional section_type filter.
+
+    Args:
+        domain_filter: Base ChromaDB domain filter dict.
+        section_type:  Optional section_type value to add to the filter.
+
+    Returns:
+        Combined filter dict, or domain_filter if section_type is None.
+    """
+    if not section_type:
+        return domain_filter
+    return {
+        "$and": [
+            domain_filter,
+            {"section_type": {"$eq": section_type}},
+        ]
+    }
+
 
 def _format_docs(docs) -> str:
     if not docs:
@@ -51,42 +91,181 @@ def _format_docs(docs) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Search tool
+# Search tools
 # ---------------------------------------------------------------------------
 
 @tool
-def search_diem(query: str) -> str:
+def search_faculty(query: str, section_filter: Optional[str] = None) -> str:
     """
-    Searches the official DIEM knowledge base for any information about
-    the Department of Information and Electrical Engineering and Applied
-    Mathematics (DIEM) of the University of Salerno.
+    Searches faculty profiles on docenti.unisa.it for information about
+    DIEM professors and researchers.
 
     Use this tool for questions about:
-    - Degree programmes, course syllabi, study plans, CFU credits,
-      prerequisites, exam modalities, and course timetables.
-    - Faculty members: office hours, curriculum, research, publications,
-      laboratory affiliations, and contact information.
-    - Department location, facilities, laboratories, and equipment.
-    - Erasmus and international mobility programmes.
-    - Internship opportunities and academic procedures.
-    - Research areas, funded projects, and spin-offs.
-    - Committees, delegates, and administrative contacts.
-    - Department regulations, official notices, and exam grade formulas.
+    - Who a professor is, their role, background, or bio
+    - Exam dates
+    - Office hours and reception times (orari di ricevimento)
+    - Courses taught by a specific professor
+    - Research projects, laboratories, or publications of a professor
+    - Contact information or resources for faculty members
+    - International activities (Erasmus, co-tutela, traineeship) of a professor
 
-    If the question covers multiple distinct topics, call this tool
-    multiple times with focused queries.
+    section_filter (optional): Restricts retrieval to a specific section
+        type. Use this to avoid noise from unrelated sections of the same
+        professor's profile. Allowed values and when to use them:
+            "home"                      — identity, role, office hours
+            "curriculum"                — bio, academic background
+            "didattica"                 — courses taught, exam date
+            "ricerca_progetti"          — research projects
+            "ricerca_pubblicazioni"     — publications
+            "ricerca_laboratori"        — laboratories
+            "ricerca_premi"             — awards and prizes
+            "risorse"                   — teaching materials
+            "international_erasmus"     — Erasmus activities
+            "international_dottorato"   — co-tutela PhD agreements
+            "international_traineeship" — international traineeship
+        Leave as None to search across all faculty sections.
+
+    Usage examples:
+        search_faculty("Chi è Antonio Greco", section_filter="curriculum")
+        search_faculty("orari ricevimento Capuano", section_filter="home")
+        search_faculty("corsi insegnati Antonio Greco", section_filter="didattica")
+        search_faculty("laboratori Foggia", section_filter="ricerca_laboratori")
 
     Args:
-        query: A precise natural language description of the information
-               needed, formulated to maximise retrieval accuracy.
+        query:         A precise natural language query about a faculty member.
+        section_filter: Optional section_type value as described above.
 
     Returns:
-        Formatted document excerpts with source URLs.
+        Formatted document excerpts from faculty profile pages.
     """
-    logger.info(f"[search_diem] Query: '{query}'")
-    docs = retrieve(query)
+    logger.info(f"[search_faculty] Query: '{query}' | section_filter: {section_filter}")
+    filter = _build_filter(_FILTER_FACULTY, section_filter)
+    docs = retrieve(query, filter=filter)
     result = _format_docs(docs)
-    logger.info(f"[search_diem] Returning {len(docs)} document(s).")
+    logger.info(f"[search_faculty] Returning {len(docs)} document(s).")
+    return result
+
+
+@tool
+def search_courses(query: str, section_filter: Optional[str] = None) -> str:
+    """
+    Searches course and degree programme documents for information about
+    DIEM academic offerings, regulations, and timetables.
+
+    Use this tool for questions about:
+    - Degree programmes offered by DIEM and their structure
+    - Course syllabi, learning objectives, and exam modalities
+    - Study plans (piani di studio) and CFU credits
+    - Sessions, and timetables
+    - Admission requirements and grade conversion formulas
+    - Degree regulations (regolamenti didattici)
+    - Internationalisation, Erasmus, or language requirements for a degree
+    - Student services, tutoring, or online tools for a degree
+
+    For grade calculations (e.g. final degree score), ALWAYS use this tool
+    first to retrieve the specific formula for the student's degree programme
+    before calling compute.
+
+    section_filter (optional): Restricts retrieval to a specific section
+        type. Allowed values and when to use them:
+            "presentazione"          — degree overview and presentation
+            "pdf_allegato"           — regulations, syllabi, grade formulas
+            "piano_studi"            — study plans
+            "immatricolazioni"       — admission requirements
+            "regolamenti"            — degree regulations
+            "internazionalizzazione" — Erasmus and international for a degree
+            "tutorato"               — tutoring services
+            "servizi"                — student services
+            "focus"                  — news and focus articles
+            "calendario_aule"        — classroom calendars
+            "orario_indice"          — lesson timetables (EasyCourse)
+            "orario_docente"         — professor timetables (EasyCourse)
+        Leave as None to search across all course sections.
+
+    Usage examples:
+        search_courses("voto laurea Ingegneria Informatica formula",
+                       section_filter="pdf_allegato")
+        search_courses("piano studi secondo anno cybersecurity",
+                       section_filter="piano_studi")
+        search_courses("requisiti ammissione Information Engineering",
+                       section_filter="immatricolazioni")
+        search_courses("orario lezioni NLP magistrale",
+                       section_filter="orario_lezioni")
+
+    Args:
+        query:         A precise natural language query about courses or regulations.
+        section_filter: Optional section_type value as described above.
+
+    Returns:
+        Formatted document excerpts from course and regulation documents.
+    """
+    logger.info(f"[search_courses] Query: '{query}' | section_filter: {section_filter}")
+    filter = _build_filter(_FILTER_COURSES, section_filter)
+    docs = retrieve(query, filter=filter)
+    result = _format_docs(docs)
+    logger.info(f"[search_courses] Returning {len(docs)} document(s).")
+    return result
+
+
+@tool
+def search_department(query: str, section_filter: Optional[str] = None) -> str:
+    """
+    Searches department pages on www.diem.unisa.it for institutional
+    information about the DIEM department.
+
+    Use this tool for questions about:
+    - Department overview, mission, and structure
+    - Committees, delegates, and administrative contacts
+    - Laboratories, facilities, and equipment
+    - Research areas, funded projects, and focus
+    - Erasmus and international mobility programmes
+    - Spin-offs, patents, and technology transfer
+    - Official notices (bandi) and department events
+    - Department location and directions
+
+    section_filter (optional): Restricts retrieval to a specific section
+        type. Allowed values and when to use them:
+            "dipartimento"               — general department pages
+            "dipartimento_presentazione" — department overview
+            "dipartimento_commissioni"   — committees and delegates
+            "dipartimento_strutture"     — laboratories and facilities
+            "ricerca_aree"               — research areas
+            "ricerca_focus"              — research focus articles
+            "ricerca_progetti"           — funded research projects
+            "bandi"                      — official notices and calls
+            "international"              — international overview
+            "international_erasmus"      — Erasmus mobility
+            "international_traineeship"  — international traineeship
+            "terzamissione"              — third mission overview
+            "terzamissione_spinoff"      — spin-off companies
+            "terzamissione_brevetti"     — patents and IP
+            "didattica_offerta"          — degree programme list
+            "didattica_alternanza"       — school-work alternance
+            "pdf_allegato"               — department PDF attachments
+        Leave as None to search across all department sections.
+
+    Usage examples:
+        search_department("commissione paritetica DIEM",
+                          section_filter="dipartimento_commissioni")
+        search_department("laboratori ricerca DIEM",
+                          section_filter="dipartimento_strutture")
+        search_department("bandi DIEM 2025",
+                          section_filter="bandi")
+        search_department("Erasmus DIEM mobilità",
+                          section_filter="international_erasmus")
+
+    Args:
+        query:         A precise natural language query about the department.
+        section_filter: Optional section_type value as described above.
+
+    Returns:
+        Formatted document excerpts from department pages.
+    """
+    logger.info(f"[search_department] Query: '{query}' | section_filter: {section_filter}")
+    filter = _build_filter(_FILTER_DEPARTMENT, section_filter)
+    docs = retrieve(query, filter=filter)
+    result = _format_docs(docs)
+    logger.info(f"[search_department] Returning {len(docs)} document(s).")
     return result
 
 
@@ -100,7 +279,7 @@ def compute(expression: str) -> str:
     Evaluates a mathematical expression and returns the numeric result.
 
     Use this tool after retrieving the relevant formula from the knowledge
-    base with search_diem. Substitute the user's values into the formula
+    base with search_courses. Substitute the user's values into the formula
     exactly as written in the retrieved document, then pass the resulting
     expression here.
 
@@ -198,8 +377,8 @@ def out_of_scope_response(reason: str) -> str:
     Returns a standard fallback response when the requested information
     is not available in the DIEM knowledge base.
 
-    Use this tool ONLY when search_diem returned no relevant documents
-    after a genuine search attempt. Do NOT use this as a shortcut.
+    Use this tool ONLY when all relevant search tools returned no useful
+    documents after genuine search attempts. Do NOT use this as a shortcut.
 
     Args:
         reason: A brief description of why the information was not found.
@@ -221,7 +400,9 @@ def out_of_scope_response(reason: str) -> str:
 # ---------------------------------------------------------------------------
 
 DIEM_TOOLS = [
-    search_diem,
+    search_faculty,
+    search_courses,
+    search_department,
     compute,
     out_of_scope_response,
 ]

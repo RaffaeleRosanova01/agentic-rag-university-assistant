@@ -38,11 +38,12 @@ Usage:
 
     initialize()
     docs = retrieve("Quali sono gli orari di ricevimento del professor Capuano?")
+    docs = retrieve("voto di laurea", filter={"domain": {"$eq": "corsi"}})
 """
 
 import json
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -162,12 +163,13 @@ def _build_docstore(path: str) -> InMemoryStore:
 # Public API
 # ---------------------------------------------------------------------------
 
-def retrieve(query: str) -> List[Document]:
+def retrieve(query: str, filter: Optional[Dict] = None) -> List[Document]:
     """
     Retrieves and reranks documents for a query.
 
     Pipeline:
-        1. Similarity search on child embeddings in ChromaDB (top_k).
+        1. Similarity search on child embeddings in ChromaDB (top_k),
+           optionally filtered by metadata.
         2. For each child, look up the parent document in the docstore
            using the parent_id metadata field.
         3. Deduplicate by parent_id — keep only the first occurrence
@@ -176,7 +178,12 @@ def retrieve(query: str) -> List[Document]:
         5. Return the top RERANK_TOP_N results.
 
     Args:
-        query: The user query string.
+        query:  The user query string.
+        filter: Optional ChromaDB metadata filter dict, e.g.:
+                {"domain": {"$eq": "docenti"}}
+                {"domain": {"$in": ["corsi", "easycourse"]}}
+                {"$and": [{"domain": {"$eq": "docenti"}},
+                           {"section_type": {"$eq": "curriculum"}}]}
 
     Returns:
         A list of up to RERANK_TOP_N ranked LangChain Documents.
@@ -191,6 +198,8 @@ def retrieve(query: str) -> List[Document]:
         )
 
     logger.info(f"[Retriever] Query: '{query}'")
+    if filter:
+        logger.info(f"[Retriever] Filter: {filter}")
 
     # Stage 1 — similarity search on child embeddings.
     logger.info(
@@ -198,7 +207,7 @@ def retrieve(query: str) -> List[Document]:
         f"(top_k={config.SIMILARITY_TOP_K}) + parent lookup ..."
     )
     child_results = _vector_store.similarity_search(
-        query, k=config.SIMILARITY_TOP_K
+        query, k=config.SIMILARITY_TOP_K, filter=filter
     )
 
     if not child_results:
