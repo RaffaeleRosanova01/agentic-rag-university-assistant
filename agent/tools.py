@@ -227,7 +227,6 @@ def search_department(query: str, section_filter: Optional[str] = None) -> str:
         type. Allowed values and when to use them:
             "dipartimento"               — general department pages
             "dipartimento_presentazione" — department overview
-            "dipartimento_commissioni"   — committees and delegates
             "dipartimento_strutture"     — laboratories and facilities
             "ricerca_aree"               — research areas
             "ricerca_focus"              — research focus articles
