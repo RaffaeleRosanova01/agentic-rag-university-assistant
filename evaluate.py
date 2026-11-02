@@ -133,6 +133,9 @@ def normalize_url(url: str) -> str:
     """Normalizes a URL for comparison (case, trailing slash, fragment, encoding)."""
     parsed = urlparse(unquote(url.strip()))
     path = parsed.path.rstrip("/")
+    # Faculty profiles: /{id}/home and /{id} are the same page.
+    if parsed.netloc.lower() == "docenti.unisa.it" and path.endswith("/home"):
+        path = path[: -len("/home")]
     query = f"?{parsed.query}" if parsed.query else ""
     return f"{parsed.netloc.lower()}{path}{query}".lower()
 
@@ -143,7 +146,12 @@ def url_matches(retrieved: str, reference: str) -> bool:
     or a sub-page of it (e.g. a faculty profile root and its /home page).
     """
     r, ref = normalize_url(retrieved), normalize_url(reference)
-    return r == ref or r.startswith(ref + "/") or r.startswith(ref + "?")
+    if r == ref:
+        return True
+    # A reference to a profile home page means that page only, not its sub-pages.
+    if urlparse(reference).path.rstrip("/").endswith("/home"):
+        return False
+    return r.startswith(ref + "/") or r.startswith(ref + "?")
 
 
 def sources_from_output(output: str) -> List[str]:

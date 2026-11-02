@@ -37,7 +37,8 @@
       "question": "Quale è il programma del corso di Natural Language Processing and LLM?",
       "reference_answer": "Il corso di Natural Language Processing and Large Language Models vale 6 CFU (48 ore: 24 lezione + 24 laboratorio) ed è erogato in inglese nel secondo semestre del secondo anno del curriculum Artificial Intelligence and Intelligent Robotics della Laurea Magistrale in Ingegneria Informatica. Prerequisito: esame di Machine Learning. I contenuti principali sono: fondamenti di NLP (tokenizzazione, POS-tagging, NER, word embeddings, RNN/LSTM), fondamenti degli LLM (fine-tuning, prompt engineering, HuggingFace, LangChain), RAG e agenti (chatbot con LangChain, advanced RAG). Esame scritto e orale con voto unico. Appelli: 28/05/2026, 08/07/2026, 28/08/2026.",
       "reference_sources": [
-        "https://docenti.unisa.it/026557/didattica?anno=2025&id=518961&cId=10001-2022&pId=N0*N0*S2"
+        "https://docenti.unisa.it/026557/didattica?id=518961&cId=10001-2022&pId=N0*N0*S2",
+        "https://docenti.unisa.it/004322/didattica?id=518961&cId=10001-2022&pId=N0*N0*S2"
       ]
     },
     {
