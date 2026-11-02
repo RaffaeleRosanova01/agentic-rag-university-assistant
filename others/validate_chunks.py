@@ -15,8 +15,8 @@ and performs quality checks:
     6. Parent coverage    — checks that every parent_id in children
                             exists in chunked_parents.json.
 
-Usage:
-    python validate_chunks.py
+Usage (from the project root):
+    python others/validate_chunks.py
 """
 
 import json
@@ -26,11 +26,11 @@ import statistics
 from collections import Counter, defaultdict
 
 CHUNKED_DOCUMENTS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),  # project root
     "data", "chunked_documents.json"
 )
 CHUNKED_PARENTS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),  # project root
     "data", "chunked_parents.json"
 )
 

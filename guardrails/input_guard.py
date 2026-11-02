@@ -6,8 +6,9 @@ Classifies incoming user queries into one of three categories before
 the ReAct agent is invoked, providing scope awareness and basic
 prompt injection resistance.
 
-The classification is performed by the same LLM used by the agent,
-invoked with a short dedicated prompt that requests a single-word response.
+The classification is performed by the lightweight guardrail LLM
+(config.GUARDRAIL_MODEL_NAME), invoked with a short dedicated prompt that
+requests a single-word response.
 This makes the guardrail dynamic and robust to paraphrasing, mixed-language
 queries, and indirect out-of-scope formulations.
 

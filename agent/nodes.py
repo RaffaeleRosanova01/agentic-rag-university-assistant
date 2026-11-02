@@ -11,11 +11,12 @@ Implements two nodes for the LangGraph agent graph:
     tool_executor_node: Executes pending tool calls, accumulates retrieved
                         context in state, increments iteration_count.
 
-The output guardrail node has been moved to guardrails/output_guard.py.
+The input and output guardrail nodes are defined in the guardrails package.
 """
 
 import logging
-from typing import Dict
+import uuid
+from typing import Dict, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
@@ -31,6 +32,40 @@ logger = logging.getLogger("DIEM_Nodes")
 # ---------------------------------------------------------------------------
 # Agent helpers
 # ---------------------------------------------------------------------------
+
+# Returned when the model produces neither tool calls nor answer text, so that
+# an empty answer never re-enters the graph.
+EMPTY_ANSWER_FALLBACK = (
+    "Non è stato possibile generare una risposta. "
+    "Ti consiglio di consultare https://www.diem.unisa.it"
+)
+
+
+def _bind_with_tool_choice(
+    llm: BaseChatModel, tools: list, tool_choice: str
+) -> Optional[BaseChatModel]:
+    """
+    Binds the tools with an explicit tool_choice ("required" or "none").
+
+    Returns None if the provider integration does not support tool_choice,
+    in which case the caller falls back to provider-independent behaviour.
+    """
+    try:
+        return llm.bind_tools(tools, tool_choice=tool_choice)
+    except (NotImplementedError, TypeError, ValueError) as exc:
+        logger.warning(f"[AgentNode] tool_choice='{tool_choice}' not supported: {exc}")
+        return None
+
+
+def _normalise_content(response: AIMessage) -> AIMessage:
+    """Joins list-type content returned by some models into a single string."""
+    if isinstance(response.content, list):
+        response.content = " ".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in response.content
+        ).strip()
+    return response
+
 
 def _has_tool_results(state: AgentState) -> bool:
     """
@@ -63,7 +98,40 @@ def build_agent_node(llm: BaseChatModel, tools: list):
         A callable node function compatible with LangGraph's StateGraph.
     """
     llm_with_tools = llm.bind_tools(tools)
-    default_tool_name = tools[0].name if tools else "search_diem"
+    # Used to force a retrieval step: the model must pick a tool itself.
+    llm_tool_required = _bind_with_tool_choice(llm, tools, "required")
+    # Used when the iteration limit is reached: the model must answer.
+    llm_tool_none = _bind_with_tool_choice(llm, tools, "none")
+    search_tool_names = [t.name for t in tools if t.name.startswith("search_")]
+
+    def _force_retrieval(full_messages: list, query: str) -> AIMessage:
+        """
+        Obtains a retrieval tool call when the model tried to answer
+        without retrieving documents first.
+
+        The model is re-invoked with tool_choice="required" so that it
+        selects the most appropriate search tool. If the provider does not
+        support tool_choice or still returns no tool call, all search tools
+        are called with the original query.
+        """
+        if llm_tool_required is not None:
+            try:
+                forced = llm_tool_required.invoke(full_messages)
+                if forced.tool_calls:
+                    return _normalise_content(forced)
+            except Exception as exc:
+                logger.warning(f"[AgentNode] Forced tool call failed: {exc}")
+
+        logger.warning(
+            f"[AgentNode] Falling back to all search tools: {search_tool_names}"
+        )
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {"id": str(uuid.uuid4()), "name": name, "args": {"query": query}}
+                for name in search_tool_names
+            ],
+        )
 
     def agent_node(state: AgentState) -> Dict:
         logger.info("[AgentNode] Invoking LLM...")
@@ -89,15 +157,15 @@ def build_agent_node(llm: BaseChatModel, tools: list):
                     "already available. Do NOT call any more tools."
                 )
             ))
+            response: AIMessage = (llm_tool_none or llm_with_tools).invoke(full_messages)
+            if response.tool_calls:
+                # The answer must be produced now: further tool calls are discarded.
+                logger.warning("[AgentNode] Tool calls ignored after iteration limit.")
+                response = AIMessage(content=response.content)
+        else:
+            response = llm_with_tools.invoke(full_messages)
 
-        response: AIMessage = llm_with_tools.invoke(full_messages)
-
-        # Normalise list-type content from models that return structured blocks.
-        if isinstance(response.content, list):
-            response.content = " ".join(
-                block.get("text", "") if isinstance(block, dict) else str(block)
-                for block in response.content
-            ).strip()
+        response = _normalise_content(response)
 
         if response.tool_calls:
             logger.info(
@@ -108,22 +176,15 @@ def build_agent_node(llm: BaseChatModel, tools: list):
 
         # Force retrieval if no documents have been retrieved yet.
         if not _has_tool_results(state):
-            logger.warning(
-                "[AgentNode] Answer attempted without retrieval. "
-                f"Forcing '{default_tool_name}' call."
-            )
-            import uuid
-            forced_response = AIMessage(
-                content="",
-                tool_calls=[{
-                    "id": str(uuid.uuid4()),
-                    "name": default_tool_name,
-                    "args": {"query": query},
-                }],
-            )
-            return {"messages": [forced_response]}
+            logger.warning("[AgentNode] Answer attempted without retrieval. Forcing a tool call.")
+            return {"messages": [_force_retrieval(full_messages, query)]}
 
-        final_text = response.content
+        final_text = response.content if isinstance(response.content, str) else ""
+        if not final_text.strip():
+            logger.warning("[AgentNode] Empty answer from the model. Using fallback message.")
+            final_text = EMPTY_ANSWER_FALLBACK
+            response = AIMessage(content=final_text)
+
         logger.info(f"[AgentNode] Final answer ({len(final_text)} chars).")
         return {
             "messages": [response],

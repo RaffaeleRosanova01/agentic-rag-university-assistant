@@ -1,5 +1,5 @@
 """
-Tools module for the DIEM Agentic RAG project — multi-tool version.
+Tools module for the DIEM Agentic RAG project.
 
 Defines the LangChain tools exposed to the ReAct agent.
 
@@ -19,6 +19,11 @@ Each tool targets a specific subset of the knowledge base, reducing noise
 from unrelated documents and improving retrieval precision.
 For queries spanning multiple domains, the agent calls the relevant tools
 sequentially.
+
+Section filters chosen by the LLM are validated against the section types
+that ingestion/metadata_extractor.py can actually assign. Unknown values are
+ignored, and a filtered search that returns no documents is automatically
+repeated with the domain filter only.
 """
 
 import logging
@@ -26,6 +31,7 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
+from ingestion.metadata_extractor import SECTION_TYPES_BY_DOMAIN
 from retrieval.retriever import initialize as initialize_retriever
 from retrieval.retriever import retrieve
 
@@ -42,6 +48,13 @@ _FILTER_FACULTY = {"domain": {"$eq": "docenti"}}
 _FILTER_COURSES = {"domain": {"$in": ["corsi", "easycourse"]}}
 
 _FILTER_DEPARTMENT = {"domain": {"$eq": "diem"}}
+
+# Section types that can appear within each tool's domain filter.
+_SECTIONS_FACULTY = SECTION_TYPES_BY_DOMAIN["docenti"]
+
+_SECTIONS_COURSES = SECTION_TYPES_BY_DOMAIN["corsi"] | SECTION_TYPES_BY_DOMAIN["easycourse"]
+
+_SECTIONS_DEPARTMENT = SECTION_TYPES_BY_DOMAIN["diem"]
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +80,51 @@ def _build_filter(domain_filter: dict, section_type: Optional[str]) -> dict:
             {"section_type": {"$eq": section_type}},
         ]
     }
+
+
+def _search(
+    tool_name: str,
+    query: str,
+    domain_filter: dict,
+    section_filter: Optional[str],
+    allowed_sections: frozenset,
+) -> list:
+    """
+    Runs a filtered retrieval shared by all search tools.
+
+    The section filter is applied only if it is a section type that exists
+    within the tool's domain; otherwise it is ignored. If the filtered search
+    returns no documents, the search is repeated with the domain filter only,
+    so that an overly narrow section choice does not leave the agent without
+    context.
+
+    Args:
+        tool_name:        Name of the calling tool, used for logging.
+        query:            The search query formulated by the agent.
+        domain_filter:    Base ChromaDB domain filter for the tool.
+        section_filter:   Optional section_type chosen by the agent.
+        allowed_sections: Section types available within the tool's domain.
+
+    Returns:
+        A list of reranked LangChain Documents (possibly empty).
+    """
+    if section_filter and section_filter not in allowed_sections:
+        logger.warning(
+            f"[{tool_name}] Unknown section_filter '{section_filter}'. "
+            "Searching the whole domain instead."
+        )
+        section_filter = None
+
+    docs = retrieve(query, filter=_build_filter(domain_filter, section_filter))
+
+    if not docs and section_filter:
+        logger.info(
+            f"[{tool_name}] No documents with section_filter '{section_filter}'. "
+            "Retrying with the domain filter only."
+        )
+        docs = retrieve(query, filter=domain_filter)
+
+    return docs
 
 
 def _format_docs(docs) -> str:
@@ -112,18 +170,23 @@ def search_faculty(query: str, section_filter: Optional[str] = None) -> str:
     section_filter (optional): Restricts retrieval to a specific section
         type. Use this to avoid noise from unrelated sections of the same
         professor's profile. Allowed values and when to use them:
-            "home"                      — identity, role, office hours
-            "curriculum"                — bio, academic background
-            "didattica"                 — courses taught, exam date
-            "ricerca_progetti"          — research projects
-            "ricerca_pubblicazioni"     — publications
-            "ricerca_laboratori"        — laboratories
-            "ricerca_premi"             — awards and prizes
-            "risorse"                   — teaching materials
-            "international_erasmus"     — Erasmus activities
-            "international_dottorato"   — co-tutela PhD agreements
-            "international_traineeship" — international traineeship
-        Leave as None to search across all faculty sections.
+            "home"                       — identity, role, office hours
+            "curriculum"                 — bio, academic background
+            "didattica"                  — courses taught, exam date
+            "ricerca_progetti"           — research projects
+            "ricerca_pubblicazioni"      — publications
+            "ricerca_laboratori"         — laboratories
+            "ricerca_premi"              — awards and prizes
+            "ricerca_brevetti"           — patents
+            "ricerca_risorse"            — research resources
+            "risorse"                    — teaching materials
+            "international_erasmus"      — Erasmus activities
+            "international_dottorato"    — co-tutela PhD agreements
+            "international_traineeship"  — international traineeship
+            "international_cooperazione" — international cooperation
+            "international_teaching"     — Erasmus teaching mobility
+        Leave as None to search across all faculty sections. If the
+        filtered search finds nothing, the whole faculty domain is searched.
 
     Usage examples:
         search_faculty("Chi è Antonio Greco", section_filter="curriculum")
@@ -139,8 +202,7 @@ def search_faculty(query: str, section_filter: Optional[str] = None) -> str:
         Formatted document excerpts from faculty profile pages.
     """
     logger.info(f"[search_faculty] Query: '{query}' | section_filter: {section_filter}")
-    filter = _build_filter(_FILTER_FACULTY, section_filter)
-    docs = retrieve(query, filter=filter)
+    docs = _search("search_faculty", query, _FILTER_FACULTY, section_filter, _SECTIONS_FACULTY)
     result = _format_docs(docs)
     logger.info(f"[search_faculty] Returning {len(docs)} document(s).")
     return result
@@ -169,18 +231,28 @@ def search_courses(query: str, section_filter: Optional[str] = None) -> str:
     section_filter (optional): Restricts retrieval to a specific section
         type. Allowed values and when to use them:
             "presentazione"          — degree overview and presentation
+            "didattica"              — teaching overview of the degree
             "pdf_allegato"           — regulations, syllabi, grade formulas
             "piano_studi"            — study plans
-            "immatricolazioni"       — admission requirements
+            "esame_finale"           — final exam rules and degree grade
             "regolamenti"            — degree regulations
+            "immatricolazioni"       — admission requirements
+            "lingua_straniera"       — foreign language requirements
             "internazionalizzazione" — Erasmus and international for a degree
             "tutorato"               — tutoring services
             "servizi"                — student services
-            "focus"                  — news and focus articles
+            "strumenti_online"       — online teaching tools
+            "strutture"              — teaching facilities
             "calendario_aule"        — classroom calendars
-            "orario_indice"          — lesson timetables (EasyCourse)
+            "contatti"               — degree programme contacts
+            "documenti_aq"           — quality assurance documents
+            "consultazioni"          — stakeholder consultations
+            "focus"                  — news and focus articles
+            "orario_lezioni"         — lesson timetables by curriculum (EasyCourse)
+            "orario_indice"          — timetable index pages (EasyCourse)
             "orario_docente"         — professor timetables (EasyCourse)
-        Leave as None to search across all course sections.
+        Leave as None to search across all course sections. If the
+        filtered search finds nothing, all course documents are searched.
 
     Usage examples:
         search_courses("voto laurea Ingegneria Informatica formula",
@@ -200,8 +272,7 @@ def search_courses(query: str, section_filter: Optional[str] = None) -> str:
         Formatted document excerpts from course and regulation documents.
     """
     logger.info(f"[search_courses] Query: '{query}' | section_filter: {section_filter}")
-    filter = _build_filter(_FILTER_COURSES, section_filter)
-    docs = retrieve(query, filter=filter)
+    docs = _search("search_courses", query, _FILTER_COURSES, section_filter, _SECTIONS_COURSES)
     result = _format_docs(docs)
     logger.info(f"[search_courses] Returning {len(docs)} document(s).")
     return result
@@ -227,21 +298,29 @@ def search_department(query: str, section_filter: Optional[str] = None) -> str:
         type. Allowed values and when to use them:
             "dipartimento"               — general department pages
             "dipartimento_presentazione" — department overview
+            "dipartimento_commissioni"   — committees and their members
             "dipartimento_strutture"     — laboratories and facilities
+            "ricerca"                    — research overview
             "ricerca_aree"               — research areas
             "ricerca_focus"              — research focus articles
             "ricerca_progetti"           — funded research projects
+            "didattica"                  — teaching overview
+            "didattica_offerta"          — degree programme list
+            "didattica_focus"            — teaching focus articles
+            "didattica_alternanza"       — school-work alternance
             "bandi"                      — official notices and calls
+            "contatti"                   — department contacts
+            "monitoraggio"               — monitoring data
             "international"              — international overview
             "international_erasmus"      — Erasmus mobility
             "international_traineeship"  — international traineeship
             "terzamissione"              — third mission overview
             "terzamissione_spinoff"      — spin-off companies
             "terzamissione_brevetti"     — patents and IP
-            "didattica_offerta"          — degree programme list
-            "didattica_alternanza"       — school-work alternance
             "pdf_allegato"               — department PDF attachments
-        Leave as None to search across all department sections.
+            "generale"                   — other department pages
+        Leave as None to search across all department sections. If the
+        filtered search finds nothing, the whole department domain is searched.
 
     Usage examples:
         search_department("commissione paritetica DIEM",
@@ -261,8 +340,7 @@ def search_department(query: str, section_filter: Optional[str] = None) -> str:
         Formatted document excerpts from department pages.
     """
     logger.info(f"[search_department] Query: '{query}' | section_filter: {section_filter}")
-    filter = _build_filter(_FILTER_DEPARTMENT, section_filter)
-    docs = retrieve(query, filter=filter)
+    docs = _search("search_department", query, _FILTER_DEPARTMENT, section_filter, _SECTIONS_DEPARTMENT)
     result = _format_docs(docs)
     logger.info(f"[search_department] Returning {len(docs)} document(s).")
     return result

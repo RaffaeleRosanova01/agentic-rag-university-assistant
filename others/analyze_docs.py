@@ -5,8 +5,8 @@ Reads raw_documents.json and prints statistical analysis of document
 lengths, separated by doc_type (html vs pdf). Useful for choosing
 optimal parent chunk sizes before indexing.
 
-Usage:
-    python analyze_docs.py
+Usage (from the project root):
+    python others/analyze_docs.py
 """
 
 import json
@@ -15,7 +15,7 @@ import statistics
 from collections import Counter
 
 RAW_DOCUMENTS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),  # project root
     "data", "raw_documents.json"
 )
 

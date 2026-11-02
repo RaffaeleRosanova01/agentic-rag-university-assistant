@@ -7,19 +7,25 @@ Run with:
 Chainlit handles the chat UI, message history display, streaming,
 and starter suggestions natively. All system logic is delegated to core.py.
 
-The agentic pipeline (ask()) is synchronous and potentially slow (10-60s).
-It is executed via asyncio.run_in_executor() to avoid blocking the Chainlit
-event loop, which would cause WebSocket timeouts on long responses.
+The agentic pipeline (ask_with_trace()) is synchronous and potentially slow
+(10-60s). It is executed via asyncio.run_in_executor() to avoid blocking the
+Chainlit event loop, which would cause WebSocket timeouts on long responses.
+
+Each answer is preceded by a collapsible "DIEM Agent" step that shows the
+input guardrail decision and every tool call actually made by the agent,
+with its arguments and a summary of its result.
 """
 
 import asyncio
+import json
+import re
 
 from engineio.payload import Payload
 Payload.max_decode_packets = 500
 
 import chainlit as cl
 
-from core import ask, initialize_system, update_history
+from core import ask_with_trace, initialize_system, update_history
 
 # ---------------------------------------------------------------------------
 # System initialisation (runs once at module load)
@@ -90,69 +96,53 @@ async def on_chat_start():
     cl.user_session.set("chat_history", [])
 
 
-@cl.step(type="retrieval", name="Retrieval from DIEM Knowledge Base")
-async def step_retrieval(query: str) -> str:
+def _summarize_tool_output(output: str) -> str:
     """
-    Displays the retrieval step in the Chainlit UI.
-    Returns the query that will be used for knowledge base search.
-    """
-    return f"Searching DIEM knowledge base for: *{query}*"
+    Produces a short, readable summary of a tool result for the UI.
 
+    Search tools return document excerpts with "[Source: URL]" markers:
+    they are summarized as the number of documents and their unique sources.
+    Other tools (compute, out_of_scope_response) are shown as returned.
+    """
+    sources = re.findall(r"\[Source: (.+?)\]", output)
+    if not sources:
+        return output if len(output) <= 500 else output[:500] + "..."
+    unique_sources = list(dict.fromkeys(sources))
+    lines = [f"{len(sources)} document(s) retrieved from:"]
+    lines += [f"- {url}" for url in unique_sources]
+    return "\n".join(lines)
 
-@cl.step(type="tool", name="Tool Execution — search_diem")
-async def step_tool(graph, query: str, chat_history: list) -> str:
-    """
-    Executes the full agentic RAG pipeline as a tool step.
-    This is the main blocking call — run in a thread executor to
-    avoid blocking the Chainlit event loop.
-    """
-    loop = asyncio.get_event_loop()
-    answer = await loop.run_in_executor(
-        None, ask, graph, query, chat_history
-    )
-    return answer
-
-
-@cl.step(type="llm", name="Generating Response")
-async def step_generate(answer: str) -> str:
-    """
-    Displays the generation step in the Chainlit UI.
-    Returns a preview of the generated answer.
-    """
-    preview = answer[:120] + "..." if len(answer) > 120 else answer
-    return f"Response generated ({len(answer)} chars): *{preview}*"
 
 @cl.on_message
 async def on_message(message: cl.Message):
     """
-    Handles an incoming user message through three visible steps:
-        1. Retrieval  — shows the query being searched
-        2. Tool       — executes the agentic RAG pipeline
-        3. Generation — confirms the response was generated
+    Handles an incoming user message.
 
-    The final answer is then streamed character by character.
+    Runs the agentic pipeline in a thread executor, then shows the steps
+    the agent actually performed (input guardrail decision and tool calls)
+    inside a collapsible step, and finally streams the answer.
     """
     graph = cl.user_session.get("graph")
     chat_history = cl.user_session.get("chat_history")
 
-    async with cl.Step(name="DIEM Agent", type="run") as parent_step:
-        
-        async with cl.Step(name="Retrieval from DIEM Knowledge Base", type="retrieval") as s1:
-            s1.output = f"Searching DIEM knowledge base for: *{message.content}*"
+    async with cl.Step(name="DIEM Agent", type="run") as agent_step:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, ask_with_trace, graph, message.content, chat_history
+        )
 
-        async with cl.Step(name="Tool Execution — search_diem", type="tool") as s2:
-            loop = asyncio.get_event_loop()
-            answer = await loop.run_in_executor(
-                None, ask, graph, message.content, chat_history
-            )
-            s2.output = f"Tool returned {len(answer)} chars."
+        async with cl.Step(name="Input guardrail", type="tool") as guard_step:
+            guard_step.output = result["guardrail_decision"]
 
-        async with cl.Step(name="Generating Response", type="llm") as s3:
-            preview = answer[:120] + "..." if len(answer) > 120 else answer
-            s3.output = f"*{preview}*"
+        for call in result["tool_calls"]:
+            async with cl.Step(name=call["name"], type="tool") as tool_step:
+                tool_step.input = json.dumps(call["args"], ensure_ascii=False)
+                tool_step.output = _summarize_tool_output(call["output"])
 
-        parent_step.output = "Done."
+        n_calls = len(result["tool_calls"])
+        agent_step.output = f"{n_calls} tool call(s)."
 
+    answer = result["answer"]
     response_msg = cl.Message(content="")
     await response_msg.send()
     for char in answer:

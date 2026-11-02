@@ -24,6 +24,10 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
+# Only required when LLM_PROVIDER is "openai" or "google".
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+
 if not HF_TOKEN and not OPENROUTER_API_KEY:
     import warnings
     warnings.warn(
@@ -36,6 +40,7 @@ if not HF_TOKEN and not OPENROUTER_API_KEY:
 # ---------------------------------------------------------------------------
 
 # Supported providers: "openrouter", "ollama", "openai", "google", "huggingface".
+# The "google" provider requires the optional package langchain-google-genai.
 LLM_PROVIDER = "openrouter"
 
 # Ollama base URL (only used when LLM_PROVIDER = "ollama").
@@ -84,7 +89,8 @@ RERANKER_MODEL_NAME_OPENROUTER = "cohere/rerank-4-pro"
 # ---------------------------------------------------------------------------
 
 # Primary embedding model — superior on multilingual benchmarks (570M params).
-EMBEDDING_MODEL_NAME = "BAAI/bge-m3"   #"BAAI/bge-m3" # "Qwen/Qwen3-Embedding-0.6B"
+# Changing this model requires rebuilding the ChromaDB index.
+EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 
 # Device for embedding inference. Auto-selects CUDA if available.
 import torch as _torch

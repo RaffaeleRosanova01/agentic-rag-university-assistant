@@ -4,14 +4,19 @@ Audit analysis script for the DIEM Agentic RAG project.
 Reads the crawl audit log and prints a breakdown of crawled URLs
 by domain, including faculty member count and course count.
 
-Usage:
-    python audit_analysis.py
+Usage (from the project root):
+    python others/audit_analysis.py
 """
 
+import os
 import re
+import sys
 from collections import defaultdict
 
-import config
+# Make the project root importable when the script is run from others/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import config  # noqa: E402
 
 
 def run() -> None:

@@ -10,9 +10,10 @@ Implements a two-stage retrieval pipeline:
         Deduplicates by parent_id — only one parent per unique parent_id
         is returned, keeping the child with the highest similarity score.
 
-    Stage 2 — Cross-encoder reranking (Cohere rerank-4-pro):
+    Stage 2 — Cross-encoder reranking:
         Reranks the parent documents retrieved in Stage 1 by relevance
-        to the query, returning the top RERANK_TOP_N results.
+        to the query, returning the top RERANK_TOP_N results. The backend
+        (local cross-encoder or API) is selected in config.RERANKER_PROVIDER.
 
 Parent-child architecture:
     Child chunks are indexed in ChromaDB and used for similarity search.
@@ -78,7 +79,7 @@ def initialize() -> None:
         1. Load the HuggingFace embedding model.
         2. Open the ChromaDB vector store (child chunk embeddings).
         3. Load chunked_parents.json into an InMemoryStore (docstore).
-        4. Initialize the Cohere cross-encoder reranker.
+        4. Initialize the cross-encoder reranker.
 
     Must be called once before any call to retrieve().
     Subsequent calls are no-ops if all components are already loaded.
@@ -174,7 +175,7 @@ def retrieve(query: str, filter: Optional[Dict] = None) -> List[Document]:
            using the parent_id metadata field.
         3. Deduplicate by parent_id — keep only the first occurrence
            (highest similarity score) for each unique parent_id.
-        4. Rerank the deduplicated parent documents with Cohere.
+        4. Rerank the deduplicated parent documents with the cross-encoder.
         5. Return the top RERANK_TOP_N results.
 
     Args:
@@ -234,7 +235,11 @@ def retrieve(query: str, filter: Optional[Dict] = None) -> List[Document]:
             continue
 
         seen_parent_ids.add(parent_id)
-        parent_docs.append(parent)
+        # Work on a copy: the reranker writes relevance_score into the
+        # metadata, and the docstore objects are shared across queries.
+        parent_docs.append(
+            Document(page_content=parent.page_content, metadata=dict(parent.metadata))
+        )
 
     if not parent_docs:
         logger.info("[Retriever] No parent documents found in docstore.")

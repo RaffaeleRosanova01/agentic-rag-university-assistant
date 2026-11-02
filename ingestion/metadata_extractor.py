@@ -95,6 +95,18 @@ _CORSI_SECTION_TYPES: Dict[str, str] = {
 }
 
 
+# Every section_type value that extract_metadata() can assign, grouped by
+# domain (including the fallback values used when no URL pattern matches).
+# agent/tools.py uses it to validate the section filters chosen by the LLM,
+# so the tool filters cannot drift from the metadata stored in ChromaDB.
+SECTION_TYPES_BY_DOMAIN: Dict[str, frozenset] = {
+    "docenti":    frozenset(_DOCENTI_SECTION_TYPES.values()) | {"unknown"},
+    "diem":       frozenset(_DIEM_SECTION_TYPES.values()) | {"generale", "pdf_allegato"},
+    "corsi":      frozenset(_CORSI_SECTION_TYPES.values()) | {"presentazione", "pdf_allegato"},
+    "easycourse": frozenset({"orario_docente", "orario_lezioni", "orario_indice"}),
+}
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------

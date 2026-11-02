@@ -1,5 +1,5 @@
 """
-Prompts module for the DIEM Agentic RAG project — multi-tool version.
+Prompts module for the DIEM Agentic RAG project.
 
 All prompts are in English for optimal instruction-following performance.
 The agent system prompt instructs the model to respond in the user's language.

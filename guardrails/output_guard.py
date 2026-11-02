@@ -105,7 +105,7 @@ def build_output_guardrail_node(llm: BaseChatModel):
 
     Args:
         llm: A LangChain chat model instance used for the safety check.
-             Should be a lightweight model (e.g. qwen3-8b).
+             Should be a lightweight model (config.GUARDRAIL_MODEL_NAME).
 
     Returns:
         A callable node function that accepts an AgentState dict and

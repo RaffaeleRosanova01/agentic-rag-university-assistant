@@ -2,19 +2,23 @@
 Core module for the DIEM Agentic RAG project.
 
 Centralizes all system initialization and pipeline logic shared between
-the CLI entry point (main.py) and the Gradio web interface (app.py).
+the CLI entry point (app_CLI.py), the Chainlit web interface
+(app_chainlit.py) and the evaluation script (evaluate_ragas.py).
 
 Public API:
     build_llm(model_name)  — instantiates a LangChain chat model.
     initialize_system()    — initializes retriever, LLMs, and agent graph.
-                             Returns (graph, chat_history=[]).
+                             Returns the compiled graph.
     ask(graph, query, chat_history) — runs one query through the agent.
+    ask_with_trace(graph, query, chat_history) — same as ask(), but also
+                             returns the guardrail decision and the tool
+                             calls made by the agent.
     update_history(chat_history, query, answer) — appends a turn and trims.
 """
 
 import logging
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import config
 from agent.graph import build_graph
@@ -94,7 +98,12 @@ def build_llm(model_name: str = None):
         )
 
     elif config.LLM_PROVIDER == "google":
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+        except ImportError as exc:
+            raise ImportError(
+                "The 'google' provider requires: pip install langchain-google-genai"
+            ) from exc
         llm = ChatGoogleGenerativeAI(
             model=effective_model,
             temperature=config.LLM_TEMPERATURE,
@@ -179,14 +188,42 @@ def _fix_latex(text: str) -> str:
 # Agentic pipeline
 # ---------------------------------------------------------------------------
 
-def ask(graph, query: str, chat_history: list) -> str:
+def _extract_tool_trace(messages: list) -> list:
+    """
+    Builds a readable trace of the tool calls made during one graph run.
+
+    Args:
+        messages: The final message list from the graph state.
+
+    Returns:
+        A list of dicts, one per tool call, in execution order:
+            {"name": str, "args": dict, "output": str}
+    """
+    outputs = {
+        m.tool_call_id: str(m.content)
+        for m in messages if isinstance(m, ToolMessage)
+    }
+    trace = []
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls:
+                trace.append({
+                    "name": call["name"],
+                    "args": call["args"],
+                    "output": outputs.get(call["id"], ""),
+                })
+    return trace
+
+
+def ask_with_trace(graph, query: str, chat_history: list) -> dict:
     """
     Runs the agentic RAG pipeline for a single user query by invoking
-    the compiled LangGraph StateGraph.
+    the compiled LangGraph StateGraph, and returns the answer together
+    with the information needed to inspect how it was produced.
 
     The graph handles input guardrail, tool calling, and output guardrail
     internally. This function is responsible only for constructing the
-    initial state and extracting the final answer.
+    initial state and extracting the results.
 
     Args:
         graph:        The compiled LangGraph StateGraph returned by
@@ -196,7 +233,12 @@ def ask(graph, query: str, chat_history: list) -> str:
                       as a list of LangChain BaseMessage objects.
 
     Returns:
-        The final answer string to display to the user.
+        A dict with keys:
+            answer:             the final answer to display to the user.
+            guardrail_decision: 'PASS', 'OUT_OF_SCOPE', 'INJECTION', or
+                                'ERROR' if the graph invocation failed.
+            tool_calls:         list of {"name", "args", "output"} dicts.
+            retrieved_context:  concatenated tool outputs of this turn.
     """
     initial_state = {
         "query": query,
@@ -213,24 +255,43 @@ def ask(graph, query: str, chat_history: list) -> str:
         result = graph.invoke(initial_state)
     except Exception as exc:
         logger.error(f"[Core] Graph invocation failed: {exc}")
-        return "Si è verificato un errore di sistema. Riprova più tardi."
+        return {
+            "answer": "Si è verificato un errore di sistema. Riprova più tardi.",
+            "guardrail_decision": "ERROR",
+            "tool_calls": [],
+            "retrieved_context": "",
+        }
 
     final_answer = result.get("final_answer", "")
     guardrail_decision = result.get("guardrail_decision", "PASS")
 
     if guardrail_decision == "OUT_OF_SCOPE":
-        return OUT_OF_SCOPE_MESSAGE
-    if guardrail_decision == "INJECTION":
-        return INJECTION_MESSAGE
-
-    if not final_answer.strip():
+        answer = OUT_OF_SCOPE_MESSAGE
+    elif guardrail_decision == "INJECTION":
+        answer = INJECTION_MESSAGE
+    elif not final_answer.strip():
         logger.warning("[Core] Empty final answer from graph.")
-        return (
+        answer = (
             "Non è stato possibile generare una risposta. "
             "Ti consiglio di consultare https://www.diem.unisa.it"
         )
+    else:
+        answer = _fix_latex(final_answer)
 
-    return _fix_latex(final_answer)
+    return {
+        "answer": answer,
+        "guardrail_decision": guardrail_decision,
+        "tool_calls": _extract_tool_trace(result.get("messages", [])),
+        "retrieved_context": result.get("retrieved_context", ""),
+    }
+
+
+def ask(graph, query: str, chat_history: list) -> str:
+    """
+    Runs the agentic RAG pipeline for a single user query and returns
+    only the final answer string. See ask_with_trace() for details.
+    """
+    return ask_with_trace(graph, query, chat_history)["answer"]
 
 
 # ---------------------------------------------------------------------------
