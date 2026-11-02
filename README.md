@@ -12,9 +12,9 @@ Developed as a group project for the *Natural Language Processing and Large Lang
 
 <p align="center">
   <img src="assets/answer_degree_grade.png" width="49%" alt="Answer computing the final degree grade from the degree regulation">
-  <img src="assets/answer_timetable.png" width="49%" alt="Answer with the lesson timetable of a course">
+  <img src="assets/answer_course_programme.png" width="49%" alt="Answer describing the programme of a course">
 </p>
-<p align="center"><sub>Left: the agent retrieves the grade formula from the degree regulation, computes the result with the <code>compute</code> tool and cites its sources. Right: lesson timetable retrieved from EasyCourse (A.Y. 2025-2026).</sub></p>
+<p align="center"><sub>Left: the agent retrieves the grade formula from the degree regulation, computes the result with the <code>compute</code> tool and cites its sources. Right: course programme retrieved from the course page in the professor's profile.</sub></p>
 
 ## Highlights
 
@@ -205,7 +205,7 @@ These numbers come from a small, hand-written test set, and the judge is the sam
 ### Known limitations
 
 - **Content not captured by the crawler**: some information shown dynamically on the university pages (e.g. exam dates in course pages) is not in the knowledge base.
-- **Timetable grids**: EasyCourse timetables are grids flattened into text, which makes lesson-time questions the hardest case; answers should be checked against the official timetable.
+- **Timetable grids**: EasyCourse timetables lose their row/column alignment when converted to text, so lesson times are often wrong.
 - **Exact-match queries**: dense retrieval struggles with short identifiers such as room numbers ("aula 126"); hybrid retrieval with BM25 is a natural next step.
 
 ## Authors
