@@ -160,15 +160,19 @@ def search_faculty(query: str, section_filter: Optional[str] = None) -> str:
 
     Use this tool for questions about:
     - Who a professor is, their role, background, or bio
-    - Exam dates
     - Office hours and reception times (orari di ricevimento)
     - Courses taught by a specific professor
+    - The page of a specific course: programme (syllabus), exam dates
+      (appelli) and teaching materials. Course pages are published in the
+      profile of the professor who teaches the course: use
+      section_filter="didattica" and include the course name in the query.
     - Research projects, laboratories, or publications of a professor
     - Contact information or resources for faculty members
     - International activities (Erasmus, co-tutela, traineeship) of a professor
 
     section_filter (optional): Restricts retrieval to a specific section
-        type. Use this to avoid noise from unrelated sections of the same
+        type. Set it only when the information clearly belongs to one
+        section; when unsure, leave it as None. Use this to avoid noise from unrelated sections of the same
         professor's profile. Allowed values and when to use them:
             "home"                       — identity, role, office hours
             "curriculum"                 — bio, academic background
@@ -216,9 +220,9 @@ def search_courses(query: str, section_filter: Optional[str] = None) -> str:
 
     Use this tool for questions about:
     - Degree programmes offered by DIEM and their structure
-    - Course syllabi, learning objectives, and exam modalities
-    - Study plans (piani di studio) and CFU credits
-    - Sessions, and timetables
+    - List of courses, study plans (piani di studio) and CFU credits
+    - Lesson timetables, academic calendars and exam sessions
+    - Classroom locations (aule) and teaching facilities
     - Admission requirements and grade conversion formulas
     - Degree regulations (regolamenti didattici)
     - Internationalisation, Erasmus, or language requirements for a degree
@@ -229,7 +233,8 @@ def search_courses(query: str, section_filter: Optional[str] = None) -> str:
     before calling compute.
 
     section_filter (optional): Restricts retrieval to a specific section
-        type. Allowed values and when to use them:
+        type. Set it only when the information clearly belongs to one
+        section; when unsure, leave it as None. Allowed values and when to use them:
             "presentazione"          — degree overview and presentation
             "didattica"              — teaching overview of the degree
             "pdf_allegato"           — regulations, syllabi, grade formulas
@@ -295,7 +300,8 @@ def search_department(query: str, section_filter: Optional[str] = None) -> str:
     - Department location and directions
 
     section_filter (optional): Restricts retrieval to a specific section
-        type. Allowed values and when to use them:
+        type. Set it only when the information clearly belongs to one
+        section; when unsure, leave it as None. Allowed values and when to use them:
             "dipartimento"               — general department pages
             "dipartimento_presentazione" — department overview
             "dipartimento_commissioni"   — committees and their members
@@ -309,7 +315,7 @@ def search_department(query: str, section_filter: Optional[str] = None) -> str:
             "didattica_focus"            — teaching focus articles
             "didattica_alternanza"       — school-work alternance
             "bandi"                      — official notices and calls
-            "contatti"                   — department contacts
+            "contatti"                   — department address and contacts
             "monitoraggio"               — monitoring data
             "international"              — international overview
             "international_erasmus"      — Erasmus mobility

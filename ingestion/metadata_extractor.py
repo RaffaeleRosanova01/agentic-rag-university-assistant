@@ -52,6 +52,7 @@ _DIEM_SECTION_TYPES: Dict[str, str] = {
     "dipartimento/presentazione":                               "dipartimento_presentazione",
     "dipartimento/strutture":                                   "dipartimento_strutture",
     "dipartimento/commissioni":                                 "dipartimento_commissioni",
+    "dipartimento/commissione-paritetica":                      "dipartimento_commissioni",
     "dipartimento":                                             "dipartimento",
     "ricerca/aree-di-ricerca":                                  "ricerca_aree",
     "ricerca/focus":                                            "ricerca_focus",
