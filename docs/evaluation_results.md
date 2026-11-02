@@ -46,6 +46,6 @@ Agent model: `openai/gpt-oss-120b` · Judge model: `openai/gpt-oss-120b`
 
 - **q06** (classroom location): the agent searches the department facilities instead of the degree-programme documents, where the classroom list is published.
 - **q07** (exam dates): the course page is indexed, but the exam dates are not part of the crawled content, so the agent correctly reports that it cannot find them.
-- **q08** (lesson timetable): EasyCourse timetables are grids; once converted to text, days and time slots lose their alignment and the model mixes them up.
+- **q08** (lesson timetable): the answer does not match the reference timetable. Timetables change between semesters and academic years, and EasyCourse grids are flattened into text, which makes this the hardest type of question.
 - **q13** (committee members): the committee page is indexed with a generic section label, so a section-filtered search returns other committees. The labelling rule is fixed for future ingestions.
 - **g01, g05**: not blocked by the input guardrail, but the agent refused them with the `out_of_scope_response` tool, so all five guardrail cases were refused overall.
