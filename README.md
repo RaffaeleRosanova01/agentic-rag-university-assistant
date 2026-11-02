@@ -19,6 +19,7 @@ Developed as a group project for the *Natural Language Processing and Large Lang
 - **Grounded answers with citations**: the agent is forced to retrieve before answering and must cite the source URLs it used.
 - **Deterministic calculations**: grade formulas are retrieved from the official regulations and evaluated with an AST-based safe calculator, never with `eval`.
 - **Guardrails**: an input classifier blocks out-of-scope requests and prompt injections; an output check blocks offensive content and private personal data, with one automatic retry.
+- **Transparent UI**: the Chainlit interface shows the guardrail decision and every tool call the agent made, with its arguments and the sources it retrieved.
 - **Incremental knowledge base**: a crawler for four university domains, PDF filtering and deduplication, and content-hash-based incremental re-indexing.
 - **Bilingual**: answers in Italian or English, matching the user's language.
 
@@ -80,7 +81,7 @@ flowchart LR
 | Reranking | Cohere `rerank-4-pro` or `BAAI/bge-reranker-v2-m3` |
 | Ingestion | Requests, BeautifulSoup, Trafilatura, PyMuPDF4LLM |
 | Interface | Chainlit (web), CLI |
-| Evaluation | RAGAS |
+| Evaluation | custom agent-level metrics with an LLM judge |
 
 The LLM provider is configurable in `config.py` (OpenRouter, Ollama, Hugging Face).
 
@@ -110,8 +111,9 @@ The LLM provider is configurable in `config.py` (OpenRouter, Ollama, Hugging Fac
 ├── core.py                 # system initialisation and query entry point
 ├── app_chainlit.py         # web interface
 ├── app_CLI.py              # terminal interface
+├── evaluation/dataset.json # evaluation questions, reference answers and sources
+├── evaluate.py             # agent-level evaluation (retrieval, routing, LLM judge, guardrails)
 ├── update_knowledge_base.py
-├── evaluate_ragas.py
 └── config.py               # all settings in one place
 ```
 
@@ -158,9 +160,25 @@ See [docs/example_questions.md](docs/example_questions.md) for questions to try.
 
 ## Evaluation
 
-`evaluate_ragas.py` runs a hand-written test set of 17 questions with reference answers and source URLs through the agent, and computes RAGAS metrics (context precision and recall, faithfulness, answer relevancy).
+Standard RAG metrics (e.g. RAGAS context precision/recall) assume a single retrieval step, while this agent chooses its tools, may call several of them and accumulates context across iterations. `evaluate.py` therefore measures the agent's behaviour directly on a hand-written set of 17 questions with reference answers and source URLs, plus 5 out-of-scope and prompt-injection cases ([evaluation/dataset.json](evaluation/dataset.json)):
 
-We used it mainly as a development tool. Standard RAGAS metrics assume a single retrieval step, while this agent may call several tools and accumulate context across iterations, so the scores were not a reliable measure of answer quality and are not reported here. The system was validated mainly through manual testing on the example questions.
+| Metric | What it checks |
+|---|---|
+| Source hit rate | a reference page is among the documents retrieved during the turn |
+| Routing accuracy | the agent called the search tool whose domain contains the reference page |
+| Answer correctness | LLM judge: answer vs. reference answer (correct / partial / incorrect) |
+| Groundedness | LLM judge: the answer's claims are supported by the retrieved documents |
+| Guardrail block rate | out-of-scope and injection attempts are refused |
+| False refusals | in-scope questions wrongly blocked by the input guardrail |
+
+```bash
+python evaluate.py              # results in evaluation/results/summary.md
+python evaluate.py --no-judge   # retrieval, routing and guardrail metrics only
+```
+
+Each case is saved as soon as it completes, so an interrupted run resumes where it stopped. Reference answers reflect the department websites in A.Y. 2025-2026.
+
+<!-- RESULTS: paste the table from evaluation/results/summary.md here -->
 
 ## Authors
 

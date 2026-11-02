@@ -71,9 +71,3 @@ chainlit
 # Utilities
 # -----------------------------------------------------------------------------
 tqdm
-
-# RAG Evaluation
-ragas
-matplotlib
-seaborn
-pandas

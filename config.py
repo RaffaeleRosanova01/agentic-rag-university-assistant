@@ -61,9 +61,9 @@ LLM_MODEL_NAME = "openai/gpt-oss-120b"
 # A smaller, faster model is sufficient for classification tasks.
 GUARDRAIL_MODEL_NAME = "meta-llama/llama-3.1-8b-instruct"
 
-LLM_MODEL_NAME_RAGAS = "openai/gpt-oss-120b"
-
-EMBEDDING_MODEL_NAME_RAGAS = "BAAI/bge-m3"
+# Judge model used by evaluate.py to grade answers. Using a different model
+# from the agent reduces self-evaluation bias.
+EVAL_JUDGE_MODEL_NAME = "openai/gpt-oss-120b"
 
 # Maximum number of tokens the LLM may generate in a single call.
 LLM_MAX_NEW_TOKENS = 4096
