@@ -1,6 +1,6 @@
 # Evaluation results
 
-Run of `python evaluate.py` on the final version of the agent (22 cases: 17 questions with reference answers, 5 guardrail cases). See the [README](../README.md#evaluation) for the metric definitions and the comparison with the first version.
+Run of `python evaluate.py` on the final version of the agent (22 cases: 17 questions with reference answers, 5 guardrail cases). See the [README](../README.md#evaluation) for the metric definitions.
 
 Agent model: `openai/gpt-oss-120b` · Judge model: `openai/gpt-oss-120b`
 

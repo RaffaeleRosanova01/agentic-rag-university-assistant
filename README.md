@@ -180,16 +180,15 @@ Each case is saved as soon as it completes, so an interrupted run resumes where 
 
 ### Results
 
-The first run of the evaluation exposed routing problems: course pages (programme, exam dates) were searched in the degree-programme domain although they are published in the faculty profiles, and overly narrow section filters hid the right pages. After fixing the tool descriptions and the system prompt (no change to the index):
-
-| Metric | First version | Final version |
-|---|---|---|
-| Source hit rate | 56% | **81%** |
-| Routing accuracy | 75% | **94%** |
-| Answer correctness | 47% | **62%** |
-| Groundedness | 71% | **91%** |
-| False refusals | 0 / 17 | 0 / 17 |
-| Avg. tool calls / latency per question | 1.29 / 10.9 s | 1.24 / 10.0 s |
+| Metric | Value |
+|---|---|
+| Source hit rate | 81% |
+| Routing accuracy | 94% |
+| Answer correctness | 62% |
+| Groundedness | 91% |
+| False refusals | 0 / 17 |
+| Avg. tool calls per question | 1.2 |
+| Avg. latency per question | 10 s |
 
 All 5 out-of-scope and injection attempts were refused: 3 by the input guardrail, 2 by the agent itself. Per-case results and an analysis of the failures are in [docs/evaluation_results.md](docs/evaluation_results.md).
 
