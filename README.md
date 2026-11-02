@@ -107,7 +107,7 @@ The LLM provider is configurable in `config.py` (OpenRouter, Ollama, Hugging Fac
 │   ├── chunker.py          # incremental parent/child chunking
 │   └── indexer.py          # incremental embedding + ChromaDB upsert
 ├── others/                 # analysis and validation utilities for the knowledge base
-├── docs/example_questions.md
+├── docs/                   # example questions, evaluation results
 ├── core.py                 # system initialisation and query entry point
 ├── app_chainlit.py         # web interface
 ├── app_CLI.py              # terminal interface
@@ -178,7 +178,28 @@ python evaluate.py --no-judge   # retrieval, routing and guardrail metrics only
 
 Each case is saved as soon as it completes, so an interrupted run resumes where it stopped. Reference answers reflect the department websites in A.Y. 2025-2026.
 
-<!-- RESULTS: paste the table from evaluation/results/summary.md here -->
+### Results
+
+The first run of the evaluation exposed routing problems: course pages (programme, exam dates) were searched in the degree-programme domain although they are published in the faculty profiles, and overly narrow section filters hid the right pages. After fixing the tool descriptions and the system prompt (no change to the index):
+
+| Metric | First version | Final version |
+|---|---|---|
+| Source hit rate | 56% | **81%** |
+| Routing accuracy | 75% | **94%** |
+| Answer correctness | 47% | **62%** |
+| Groundedness | 71% | **91%** |
+| False refusals | 0 / 17 | 0 / 17 |
+| Avg. tool calls / latency per question | 1.29 / 10.9 s | 1.24 / 10.0 s |
+
+All 5 out-of-scope and injection attempts were refused: 3 by the input guardrail, 2 by the agent itself. Per-case results and an analysis of the failures are in [docs/evaluation_results.md](docs/evaluation_results.md).
+
+These numbers come from a small, hand-written test set, and the judge is the same model family as the agent, so they are indicative rather than a benchmark.
+
+### Known limitations
+
+- **Content not captured by the crawler**: some information shown dynamically on the university pages (e.g. exam dates in course pages) is not in the knowledge base.
+- **Timetable grids**: EasyCourse timetables lose their row/column alignment when converted to text, so lesson times are often wrong.
+- **Exact-match queries**: dense retrieval struggles with short identifiers such as room numbers ("aula 126"); hybrid retrieval with BM25 is a natural next step.
 
 ## Authors
 
