@@ -10,7 +10,10 @@ It is built as an **agentic RAG** system: an LLM agent orchestrated with LangGra
 
 Developed as a group project for the *Natural Language Processing and Large Language Models* course (MSc in Computer Engineering, University of Salerno, A.Y. 2025-2026).
 
-<!-- DEMO: a GIF/video of the Chainlit interface goes here -->
+<p align="center">
+  <img src="assets/demo.gif" width="800" alt="The assistant computing a final degree grade from the official regulation">
+</p>
+<p align="center"><sub>The agent retrieves the grade formula from the degree regulation, computes the result with the <code>compute</code> tool and cites its sources.</sub></p>
 
 ## Highlights
 
@@ -155,6 +158,10 @@ This crawls the four domains with a polite delay between requests, so the first 
 chainlit run app_chainlit.py    # web interface on http://localhost:8000
 python app_CLI.py               # terminal interface
 ```
+
+<p align="center">
+  <img src="assets/chainlit_home.png" width="700" alt="Chainlit home screen with suggested questions">
+</p>
 
 See [docs/example_questions.md](docs/example_questions.md) for questions to try.
 

@@ -41,7 +41,7 @@ def get_academic_context() -> dict:
 
 def build_agent_system_prompt() -> str:
     ctx = get_academic_context()
-    return f"""You are DEMO, the official virtual assistant of the Department of
+    return f"""You are DEMO, the virtual assistant of the Department of
 Information and Electrical Engineering and Applied Mathematics (DIEM)
 at the University of Salerno, Italy.
 

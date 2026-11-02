@@ -1,5 +1,5 @@
 ## 🤖 DEMO — Assistente Virtuale del DIEM
-Benvenuto! Sono **DEMO**, l'assistente virtuale ufficiale del  **Dipartimento di Ingegneria dell'Informazione ed Elettrica e Matematica Applicata (DIEM)** dell'Università degli Studi di Salerno.
+Benvenuto! Sono **DEMO**, l'assistente virtuale del **Dipartimento di Ingegneria dell'Informazione ed Elettrica e Matematica Applicata (DIEM)** dell'Università degli Studi di Salerno.
 
 ---
 
@@ -40,3 +40,7 @@ Per aiutarmi a trovare le informazioni più accurate, ti suggerisco di:
 | 🎓 **Corsi di laurea** | [corsi.unisa.it](https://corsi.unisa.it) — Dettagli su piani di studio, syllabi ed esami |
 | 👨‍🏫 **Profili docenti** | [docenti.unisa.it](https://docenti.unisa.it) — Curriculum, orari di ricevimento e attività di ricerca |
 | 📅 **Orari ed esami** | [easycourse.unisa.it](https://easycourse.unisa.it/AgendaStudenti) — Calendario lezioni e appelli d'esame |
+
+---
+
+*Progetto universitario sviluppato per il corso di Natural Language Processing and Large Language Models: non è un servizio ufficiale dell'Università di Salerno. Le risposte possono contenere errori, verifica sempre sulle fonti ufficiali.*
