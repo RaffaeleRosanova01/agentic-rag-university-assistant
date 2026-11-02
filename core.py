@@ -3,7 +3,7 @@ Core module for the DIEM Agentic RAG project.
 
 Centralizes all system initialization and pipeline logic shared between
 the CLI entry point (app_CLI.py), the Chainlit web interface
-(app_chainlit.py) and the evaluation script (evaluate_ragas.py).
+(app_chainlit.py) and the evaluation script (evaluate.py).
 
 Public API:
     build_llm(model_name)  — instantiates a LangChain chat model.
