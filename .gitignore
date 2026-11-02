@@ -1,38 +1,32 @@
-# ==============================================================================
-# DIEM Agentic RAG - .gitignore 
-# ==============================================================================
+# Secrets
 .env
 
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
 
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Knowledge base and local artifacts (rebuilt with update_knowledge_base.py)
+data/
 chroma/
 chroma_db/
-
-.vscode/
-
-data/
-
-.chainlit/
-
-evaluation/
-
+chroma_db*.zip
 models/
 
+# Chainlit runtime files
+.chainlit/
+.files/
 public/
 
-chroma_db_backup.zip
-
-chroma_db_baiiL_sparseDense_updated.zip
-
-chroma_db_baiiM_sparseDense_updated.zip
-
-chroma_db_l_updated.zip
-
-chroma_db_m_updated.zip
-
-chroma_db_qwenL_updated.zip
-
-chroma_db_qwenM_updated.zip
-
+# Evaluation outputs
+evaluation/
 evaluation_results.json
+evaluation_scores.csv
+evaluation_*.png
